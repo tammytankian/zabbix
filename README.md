@@ -7,6 +7,6 @@ From time to time I go over my templates to see where they can improve and will 
 
 If you download and feel they miss something, feel free to customize them!
 
-Also, I usually do add  triggers to my templates, as I feel what is a "problem value" is very subjective to each person and business
+Also, I usually don't add triggers to my templates, as I feel what is a "problem value" is very subjective to each person and business
 
 IMPORTANT: All my templates have been tested on Zabbix 7+, so you *may* have to adapt them to your environment, if you are using an older version.

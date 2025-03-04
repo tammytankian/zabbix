@@ -7,4 +7,5 @@ Have fun!
 
 ### Disclaimer
 You should know, all my templates are based on Zabbix >7.0
+
 It may work on older versions but I am not sure

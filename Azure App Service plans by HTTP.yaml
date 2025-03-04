@@ -1,0 +1,634 @@
+zabbix_export:
+  version: '7.2'
+  template_groups:
+    - uuid: c2c162144c2d4c5491c8801193af4945
+      name: Templates/Cloud
+  templates:
+    - uuid: 35a40d0379574e3dab63a9580dd5de7a
+      template: 'Azure App Service plans by HTTP'
+      name: 'Azure App Service plans by HTTP'
+      description: ''
+      vendor:
+        name: 'Azure Custom Template'
+        version: 7.0-0
+      groups:
+        - name: Templates/Cloud
+      items:
+        - uuid: 268a73eea00e414a8ff34e7668f00840
+          name: 'CPU Percentage'
+          type: DEPENDENT
+          key: azure.sp.cpu.percentage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The average CPU used across all instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.CpuPercentage.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: cpu
+          triggers:
+            - uuid: 672c35d297e74a2e925b3cf2fed9b24f
+              expression: 'min(/Azure App Service plans by HTTP/azure.sp.cpu.percentage,15m)>={$SP_CPU}'
+              name: 'CPU usage for service plan is too high'
+              priority: WARNING
+              manual_close: 'YES'
+        - uuid: 5f6c6d0422d8491fac6891e508899ac9
+          name: 'Get data'
+          type: SCRIPT
+          key: azure.sp.data.get
+          delay: 1m
+          history: '0'
+          value_type: TEXT
+          params: |
+            var AzureSP = {
+                params: {},
+                token: null,
+            
+                setParams: function(params) {
+                    ['app_id', 'password', 'tenant_id', 'subscription_id', 'resource_id'].forEach(function(field) {
+                        if (typeof params !== 'object' || typeof params[field] === 'undefined' || params[field] === '') {
+                            throw 'Required param is not set: ' + field + '.';
+                        }
+                    });
+            
+                    AzureSP.params = params;
+                },
+            
+                request: function(url, data) {
+                    if (typeof data === 'undefined' || data === null) {
+                        data = '';
+                    }
+            
+                    var response, request = new HttpRequest();
+                    if (typeof AzureSP.params.proxy !== 'undefined' && AzureSP.params.proxy !== '') {
+                        request.setProxy(AzureSP.params.proxy);
+                    }
+                    if (AzureSP.token) {
+                        request.addHeader('Accept: application/json');
+                        request.addHeader('Authorization: Bearer ' + AzureSP.token);
+                    }
+            
+                    Zabbix.log(4, '[ Azure ] Sending request: ' + url);
+            
+                    if (data !== '') {
+                        request.addHeader('Content-Type: application/x-www-form-urlencoded');
+                        response = request.post(url, data);
+                    } else {
+                        response = request.get(url);
+                    }
+            
+                    Zabbix.log(4, '[ Azure ] Received response with status code ' + request.getStatus() + ': ' + response);
+            
+                    if (request.getStatus() !== 200 || response === null) {
+                        throw 'Request failed with status code ' + request.getStatus() + ': ' + response;
+                    }
+            
+                    try {
+                        return JSON.parse(response);
+                    } catch (error) {
+                        throw 'Failed to parse response received from API.';
+                    }
+                }
+            };
+            
+            var data = {};
+            data['errors'] = {};
+            data['metrics'] = {};
+            
+            try {
+                AzureSP.setParams(JSON.parse(value));
+            
+                try {
+                    result = AzureSP.request(
+                        'https://login.microsoftonline.com/' + encodeURIComponent(AzureSP.params.tenant_id) + '/oauth2/token',
+                        'grant_type=client_credentials&resource=' + encodeURIComponent('https://management.azure.com/') + '&client_id=' + encodeURIComponent(AzureSP.params.app_id) + '&client_secret=' + encodeURIComponent(AzureSP.params.password)
+                    );
+            
+                    if ('access_token' in result) {
+                        AzureSP.token = result['access_token'];
+                    } else {
+                        throw 'Auth response does not contain access token.';
+                    }
+                } catch (error) {
+                    data.errors.auth = error.toString();
+                }
+            
+                if (!('auth' in data.errors)) {
+                    try {
+                        var health = AzureSP.request('https://management.azure.com' + AzureSP.params.resource_id + '/providers/Microsoft.ResourceHealth/availabilityStatuses?api-version=2020-05-01');
+                        if ('value' in health && Array.isArray(health.value) && health.value.length > 0 && 'properties' in health.value[0] && typeof health.value[0].properties === 'object') {
+                            data.health = health.value[0].properties;
+                        }
+                    } catch (error) {
+                        data.errors.health = error.toString();
+                    }
+            
+                    try {
+                        var metricsList = AzureSP.request('https://management.azure.com' + AzureSP.params.resource_id + '/providers/Microsoft.Insights/metricDefinitions?api-version=2021-05-01');
+            
+                        if ('value' in metricsList && Array.isArray(metricsList.value) && metricsList.value.length > 0) {
+                            var metrics = metricsList.value.map(function(metric) {
+                                return metric.name.value;
+                            });
+            
+                            var prepared_metrics = [];
+                            for (var i = 0; i < metrics.length; i += 20) {
+                                var chunk = metrics.slice(i, i + 20);
+                                prepared_metrics.push(
+                                    chunk.map(function(element) {
+                                        return encodeURIComponent(element);
+                                    }).join(',')
+                                );
+                            }
+            
+                            var start_date = new Date((new Date().getTime()) - 300000).toISOString().replace(/\.\d+/, '');
+                            var end_date = new Date().toISOString().replace(/\.\d+/, '');
+            
+                            for (var j in prepared_metrics) {
+                                try {
+                                    var metrics_data = AzureSP.request('https://management.azure.com' + AzureSP.params.resource_id + '/providers/Microsoft.Insights/metrics?metricnames=' + prepared_metrics[j] + '&timespan=' + encodeURIComponent(start_date) + '/' + encodeURIComponent(end_date) + '&api-version=2021-05-01');
+                                    if ('value' in metrics_data && Array.isArray(metrics_data.value) && metrics_data.value.length > 0) {
+                                        for (var k in metrics_data.value) {
+                                            if ('name' in metrics_data.value[k] && typeof metrics_data.value[k].name === 'object' && 'value' in metrics_data.value[k].name && typeof metrics_data.value[k].name.value === 'string' && 'timeseries' in metrics_data.value[k] && Array.isArray(metrics_data.value[k].timeseries) && metrics_data.value[k].timeseries.length > 0 && 'data' in metrics_data.value[k].timeseries[0] && Array.isArray(metrics_data.value[k].timeseries[0].data) && metrics_data.value[k].timeseries[0].data.length > 0) {
+                                                data.metrics[metrics_data.value[k].name.value.replace(/(\s|\/)+/g, '')] = metrics_data.value[k].timeseries[0].data[metrics_data.value[k].timeseries[0].data.length - 1];
+                                            }
+                                        }
+                                    }
+                                } catch (error) {
+                                    data.errors[prepared_metrics[j]] = error.toString();
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        data.errors.metricsList = error.toString();
+                    }
+                }
+            } catch (error) {
+                data.errors.params = error.toString();
+            }
+            
+            if (Object.keys(data.errors).length !== 0) {
+                var errors = 'Failed to receive data:';
+                for (var error in data.errors) {
+                    errors += '\n' + error + ' : ' + data.errors[error];
+                }
+                data.errors = errors;
+            } else {
+                data.errors = '';
+            }
+            
+            return JSON.stringify(data);
+          description: 'The result of API requests is expressed in the JSON.'
+          timeout: '{$AZURE.DATA.TIMEOUT}'
+          parameters:
+            - name: app_id
+              value: '{$AZURE.APP.ID}'
+            - name: password
+              value: '{$AZURE.PASSWORD}'
+            - name: proxy
+              value: '{$AZURE.PROXY}'
+            - name: resource_id
+              value: '{$AZURE.RESOURCE.ID}'
+            - name: subscription_id
+              value: '{$AZURE.SUBSCRIPTION.ID}'
+            - name: tenant_id
+              value: '{$AZURE.TENANT.ID}'
+          tags:
+            - tag: component
+              value: 'api request'
+        - uuid: 02856e12d25c4d96b3932708b361d1ba
+          name: 'Disk Queue Length'
+          type: DEPENDENT
+          key: azure.sp.disk.io
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of both read and write requests that were queued on storage. A high disk queue length is an indication of an app that might be slowing down because of excessive disk I/O.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.DiskQueueLength.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: disk
+            - tag: component
+              value: operations
+        - uuid: 48891aa71a9d4a29b40ad5b7f691377a
+          name: 'Get errors'
+          type: DEPENDENT
+          key: azure.sp.errors
+          history: 7d
+          value_type: TEXT
+          description: 'A list of errors from API requests.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.errors
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1h
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: 'api request'
+          triggers:
+            - uuid: fc4a450440f045f5a3b5cdc363c3c881
+              expression: 'length(last(/Azure App Service plans by HTTP/azure.sp.errors))>0'
+              name: 'Zabbix was unable to collect API data'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: AVERAGE
+              description: 'Zabbix has received errors in response to API requests.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 617f4472ce0e44c7a33fcc1aff1349f0
+          name: 'Http Queue Length'
+          type: DEPENDENT
+          key: azure.sp.http.queue
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of HTTP requests that had to sit on the queue before being fulfilled. A high or increasing HTTP Queue length is a symptom of a plan under heavy load.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.HttpQueueLength.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: http
+        - uuid: 2178b220e5924713a6955942d16b3c96
+          name: 'TCP Close Wait'
+          type: DEPENDENT
+          key: azure.sp.http.socket.closewait
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in CLOSE_WAIT state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpCloseWait.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 4dbd84e72686404896fcead61f454d49
+          name: 'TCP Closing'
+          type: DEPENDENT
+          key: azure.sp.http.socket.closing
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in CLOSING state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpClosing.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 0dfd683917144b4a89ff23136b4648ea
+          name: 'TCP Established'
+          type: DEPENDENT
+          key: azure.sp.http.socket.established
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in ESTABLISHED state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpEstablished.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 45dfe3f313cd418e86d7c3e1bd35b9d5
+          name: 'Established Socket Count for Outbound Requests'
+          type: DEPENDENT
+          key: azure.sp.http.socket.established.out
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in ESTABLISHED state used for outbound connections across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.SocketOutboundEstablished.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 9f3140bc8b0d4688bd3204df396c2e6a
+          name: 'TCP Fin Wait 1'
+          type: DEPENDENT
+          key: azure.sp.http.socket.finwait.1
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in FIN_WAIT_1 state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpFinWait1.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 4cb6fa8bd2ce48d98c6c10da365a99f7
+          name: 'TCP Fin Wait 2'
+          type: DEPENDENT
+          key: azure.sp.http.socket.finwait.2
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in FIN_WAIT_2 state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpFinWait2.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: cc2a4a2ad6ce442fa2a8a4c8f3853f5b
+          name: 'Socket Count for Inbound Requests'
+          type: DEPENDENT
+          key: azure.sp.http.socket.in
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets used for incoming HTTP requests across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.SocketInboundAll.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 01355c0fea9148388dcbac63e044342d
+          name: 'TCP Last Ack'
+          type: DEPENDENT
+          key: azure.sp.http.socket.lastack
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in LAST_ACK state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpLastAck.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: d4639f8993cc49ccbefcbc8839646004
+          name: 'Socket Count for Loopback Connections'
+          type: DEPENDENT
+          key: azure.sp.http.socket.loopback
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets used for loopback connections across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.SocketLoopback.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: ae8a6c2d976c4c1c84962145991aefb6
+          name: 'Socket Count of Outbound Requests'
+          type: DEPENDENT
+          key: azure.sp.http.socket.out
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets used for outbound connections across all the instances of the plan irrespective of their TCP states. Having too many outbound connections can cause connectivity errors.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.SocketOutboundAll.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: d17ce90a6413426a891a6d8fa977804d
+          name: 'TCP Syn Received'
+          type: DEPENDENT
+          key: azure.sp.http.socket.synrcvd
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in SYN_RCVD state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpSynReceived.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: d1b9575587b34acd9e49551cdb4c2404
+          name: 'TCP Syn Sent'
+          type: DEPENDENT
+          key: azure.sp.http.socket.synsent
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in SYN_SENT state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpSynSent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 54a3c7dc9ab044848ca6e6b2560f1607
+          name: 'TCP Time Wait'
+          type: DEPENDENT
+          key: azure.sp.http.socket.timewait
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in TIME_WAIT state across all the instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.TcpTimeWait.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: a68b9194a0d94a2ea805ffc210a945ef
+          name: 'Time Wait Socket Count for Outbound Requests'
+          type: DEPENDENT
+          key: azure.sp.http.socket.timewait.out
+          history: 7d
+          value_type: FLOAT
+          description: 'The average number of sockets in TIME_WAIT state used for outbound connections across all the instances of the plan. High or increasing outbound socket counts in TIME_WAIT state can cause connectivity errors.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.SocketOutboundTimeWait.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: socket
+        - uuid: 022798f187f2471c9cebf866f388cb71
+          name: 'Memory Percentage'
+          type: DEPENDENT
+          key: azure.sp.memory.percentage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The average memory used across all instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.MemoryPercentage.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: memory
+          triggers:
+            - uuid: 41ee260f7c3f4aa59603841cf25d6b11
+              expression: 'min(/Azure App Service plans by HTTP/azure.sp.memory.percentage,15m)>={$SP_MEM}'
+              name: 'Memory usage for Service Plan is too high'
+              priority: WARNING
+              manual_close: 'YES'
+        - uuid: 34211b0a28fa464e93d00749f2d51fec
+          name: 'Data In'
+          type: DEPENDENT
+          key: azure.sp.net.in
+          history: 7d
+          value_type: FLOAT
+          units: B
+          description: 'The average incoming bandwidth used across all instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.BytesReceived.total
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+        - uuid: 4a198571ff1c4afc894a7e4de3ccd50a
+          name: 'Data Out'
+          type: DEPENDENT
+          key: azure.sp.net.out
+          history: 7d
+          value_type: FLOAT
+          units: B
+          description: 'The average outgoing bandwidth used across all instances of the plan.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.BytesSent.total
+          master_item:
+            key: azure.sp.data.get
+          tags:
+            - tag: component
+              value: network
+      tags:
+        - tag: datasource
+          value: azure
+        - tag: resource
+          value: 'service plan'
+        - tag: type
+          value: http
+      macros:
+        - macro: '{$AZURE.APP.ID}'
+          description: 'The App ID of Microsoft Azure.'
+        - macro: '{$AZURE.DATA.TIMEOUT}'
+          value: 30s
+          description: 'A response timeout for API.'
+        - macro: '{$AZURE.PASSWORD}'
+          type: SECRET_TEXT
+          description: 'Microsoft Azure password.'
+        - macro: '{$AZURE.PROXY}'
+          description: 'Sets HTTP proxy value. If this macro is empty then no proxy is used.'
+        - macro: '{$AZURE.RESOURCE.ID}'
+          description: 'Microsoft Azure virtual machine ID.'
+        - macro: '{$AZURE.SUBSCRIPTION.ID}'
+          description: 'Microsoft Azure subscription ID.'
+        - macro: '{$AZURE.TENANT.ID}'
+          description: 'Microsoft Azure tenant ID.'
+        - macro: '{$SP_CPU}'
+          value: '90'
+        - macro: '{$SP_MEM}'
+          value: '90'
+      valuemaps:
+        - uuid: 4a1056200ddd42f995934343461fad93
+          name: 'Azure resource health state'
+          mappings:
+            - value: '0'
+              newvalue: Available
+            - value: '1'
+              newvalue: Degraded
+            - value: '2'
+              newvalue: Unavailable
+            - value: '3'
+              newvalue: Unknown

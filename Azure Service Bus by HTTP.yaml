@@ -7,6 +7,9 @@ zabbix_export:
     - uuid: affc0911e6904fc4b941d55e06369b3e
       template: 'Azure Service Bus by HTTP - Reviewed'
       name: 'Azure Service Bus by HTTP - Reviewed'
+      vendor:
+        name: 'Azure Custom Template'
+        version: 7.0-0
       groups:
         - name: Templates/Cloud
       items:

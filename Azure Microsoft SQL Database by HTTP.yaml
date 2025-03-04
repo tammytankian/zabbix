@@ -1,0 +1,1008 @@
+zabbix_export:
+  version: '7.2'
+  template_groups:
+    - uuid: c2c162144c2d4c5491c8801193af4945
+      name: Templates/Cloud
+  templates:
+    - uuid: a83b6f728cda4ebe88d697b56794390e
+      template: 'Azure Microsoft SQL Database by HTTP'
+      name: 'Azure Microsoft SQL Database by HTTP'
+      description: ''
+      vendor:
+        name: 'Azure Custom Template'
+        version: 7.0-0
+      groups:
+        - name: Templates/Cloud
+      items:
+        - uuid: f6516b77dfe14caa9853ac1c0d879be5
+          name: 'Availability Percentage'
+          type: DEPENDENT
+          key: azure.db.mssql.availability.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The percentage of SLA compliant availability for the database. Availability is calculated based on connections and for each one-minute data point the value will be either 100% if connection(s) succeed or 0% if all connections fail due to system errors.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.availability.average
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 12h
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: availability
+        - uuid: f4c91be899f6475ea4d3a75a332ca0b5
+          name: 'Connections failed: System errors'
+          type: DEPENDENT
+          key: azure.db.mssql.connections.failed.system
+          history: 7d
+          description: 'The count of failed connections with system errors.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.connection_failed.total
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: network
+        - uuid: 827ef518ca324228807fc80b8b0e765c
+          name: 'Connections successful'
+          type: DEPENDENT
+          key: azure.db.mssql.connections.successful
+          history: 7d
+          description: 'The count of successful connections.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.connection_successful.total
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: network
+        - uuid: 76b2291ff5bf49a1ab7fc8e730a740ad
+          name: 'Percentage CPU'
+          type: DEPENDENT
+          key: azure.db.mssql.cpu.percentage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The CPU percent of a host.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.cpu_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: cpu
+          triggers:
+            - uuid: d9e1bb5dea16423f96d08617dce7878c
+              expression: 'min(/Azure Microsoft SQL Database by HTTP/azure.db.mssql.cpu.percentage,15m)>={$DB_CPU}'
+              name: 'CPU usage this database is too high'
+              priority: WARNING
+              manual_close: 'YES'
+        - uuid: 92c78177ddc84c3ea2f400d77cf3627e
+          name: 'Get errors'
+          type: DEPENDENT
+          key: azure.db.mssql.data.errors
+          history: 7d
+          value_type: TEXT
+          description: 'A list of errors from API requests.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.errors
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1h
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: raw
+          triggers:
+            - uuid: 13aac55ca0584bd2859e198f971444aa
+              expression: 'length(last(/Azure Microsoft SQL Database by HTTP/azure.db.mssql.data.errors))>0'
+              name: 'There are errors in requests to API'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: AVERAGE
+              description: 'Zabbix has received errors in response to API requests.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 9dc9652a45934a8fb217944419d1b226
+          name: 'Get data'
+          type: SCRIPT
+          key: azure.db.mssql.data.get
+          delay: 10m
+          history: '0'
+          value_type: TEXT
+          params: |
+            var AzureDB = {
+                params: {},
+                token: null,
+            
+                setParams: function(params) {
+                    ['app_id', 'password', 'tenant_id', 'subscription_id', 'resource_id'].forEach(function(field) {
+                        if (typeof params !== 'object' || typeof params[field] === 'undefined' || params[field] === '') {
+                            throw 'Required param is not set: ' + field + '.';
+                        }
+                    });
+            
+                    AzureDB.params = params;
+                },
+            
+                request: function(url, data) {
+                    if (typeof data === 'undefined' || data === null) {
+                        data = '';
+                    }
+            
+                    var response, request = new HttpRequest();
+                    if (typeof AzureDB.params.proxy !== 'undefined' && AzureDB.params.proxy !== '') {
+                        request.setProxy(AzureDB.params.proxy);
+                    }
+                    if (AzureDB.token) {
+                        request.addHeader('Accept: application/json');
+                        request.addHeader('Authorization: Bearer ' + AzureDB.token);
+                    }
+            
+                    Zabbix.log(4, '[ Azure ] Sending request: ' + url);
+            
+                    if (data !== '') {
+                        request.addHeader('Content-Type: application/x-www-form-urlencoded');
+                        response = request.post(url, data);
+                    } else {
+                        response = request.get(url);
+                    }
+            
+                    Zabbix.log(4, '[ Azure ] Received response with status code ' + request.getStatus() + ': ' + response);
+            
+                    if (request.getStatus() !== 200 || response === null) {
+                        throw 'Request failed with status code ' + request.getStatus() + ': ' + response;
+                    }
+            
+                    try {
+                        return JSON.parse(response);
+                    } catch (error) {
+                        throw 'Failed to parse response received from API.';
+                    }
+                }
+            };
+            
+            var data = {};
+            data['errors'] = {};
+            data['metrics'] = {};
+            
+            try {
+                AzureDB.setParams(JSON.parse(value));
+            
+                try {
+                    result = AzureDB.request(
+                        'https://login.microsoftonline.com/' + encodeURIComponent(AzureDB.params.tenant_id) + '/oauth2/token',
+                        'grant_type=client_credentials&resource=' + encodeURIComponent('https://management.azure.com/') + '&client_id=' + encodeURIComponent(AzureDB.params.app_id) + '&client_secret=' + encodeURIComponent(AzureDB.params.password)
+                    );
+            
+                    if ('access_token' in result) {
+                        AzureDB.token = result['access_token'];
+                    } else {
+                        throw 'Auth response does not contain access token.';
+                    }
+                } catch (error) {
+                    data.errors.auth = error.toString();
+                }
+            
+                if (!('auth' in data.errors)) {
+                    try {
+                        var metricsList = AzureDB.request('https://management.azure.com' + AzureDB.params.resource_id + '/providers/Microsoft.Insights/metricDefinitions?api-version=2021-05-01');
+            
+                        if ('value' in metricsList && Array.isArray(metricsList.value) && metricsList.value.length > 0) {
+                            var metrics = metricsList.value.map(function(metric) {
+                                return metric.name.value;
+                            });
+            
+                            var prepared_metrics = [];
+                            for (var i = 0; i < metrics.length; i += 20) {
+                                var chunk = metrics.slice(i, i + 20);
+                                prepared_metrics.push(
+                                    chunk.map(function(element) {
+                                        return encodeURIComponent(element);
+                                    }).join(',')
+                                );
+                            }
+            
+                            var start_date = new Date((new Date().getTime()) - 300000).toISOString().replace(/\.\d+/, '');
+                            var end_date = new Date().toISOString().replace(/\.\d+/, '');
+            
+                            for (var j in prepared_metrics) {
+                                try {
+                                    var metrics_data = AzureDB.request('https://management.azure.com' + AzureDB.params.resource_id + '/providers/Microsoft.Insights/metrics?metricnames=' + prepared_metrics[j] + '&timespan=' + encodeURIComponent(start_date) + '/' + encodeURIComponent(end_date) + '&api-version=2021-05-01');
+                                    if ('value' in metrics_data && Array.isArray(metrics_data.value) && metrics_data.value.length > 0) {
+                                        for (var k in metrics_data.value) {
+                                            if ('name' in metrics_data.value[k] && typeof metrics_data.value[k].name === 'object' && 'value' in metrics_data.value[k].name && typeof metrics_data.value[k].name.value === 'string' && 'timeseries' in metrics_data.value[k] && Array.isArray(metrics_data.value[k].timeseries) && metrics_data.value[k].timeseries.length > 0 && 'data' in metrics_data.value[k].timeseries[0] && Array.isArray(metrics_data.value[k].timeseries[0].data) && metrics_data.value[k].timeseries[0].data.length > 0) {
+                                                data.metrics[metrics_data.value[k].name.value.replace(/(\s|\/)+/g, '')] = metrics_data.value[k].timeseries[0].data[metrics_data.value[k].timeseries[0].data.length - 1];
+                                            }
+                                        }
+                                    }
+                                } catch (error) {
+                                    data.errors[prepared_metrics[j]] = error.toString();
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        data.errors.metricsList = error.toString();
+                    }
+                }
+            } catch (error) {
+                data.errors.params = error.toString();
+            }
+            
+            if (Object.keys(data.errors).length !== 0) {
+                var errors = 'Failed to receive data:';
+                for (var error in data.errors) {
+                    errors += '\n' + error + ' : ' + data.errors[error];
+                }
+                data.errors = errors;
+            } else {
+                data.errors = '';
+            }
+            
+            return JSON.stringify(data);
+          description: 'The result of API requests is expressed in the JSON.'
+          timeout: '{$AZURE.DATA.TIMEOUT}'
+          parameters:
+            - name: app_id
+              value: '{$AZURE.APP.ID}'
+            - name: password
+              value: '{$AZURE.PASSWORD}'
+            - name: proxy
+              value: '{$AZURE.PROXY}'
+            - name: resource_id
+              value: '{$AZURE.RESOURCE.ID}'
+            - name: subscription_id
+              value: '{$AZURE.SUBSCRIPTION.ID}'
+            - name: tenant_id
+              value: '{$AZURE.TENANT.ID}'
+          tags:
+            - tag: component
+              value: raw
+        - uuid: dbe2e5c008e94d53a0fd69871cdd6203
+          name: 'Data IO percentage'
+          type: DEPENDENT
+          key: azure.db.mssql.data.read.percentage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The percentage of physical data read.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.physical_data_read_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: operations
+            - tag: component
+              value: storage
+        - uuid: 7b4d110167cc4072a7bbf5f8a8e30977
+          name: Deadlocks
+          type: DEPENDENT
+          key: azure.db.mssql.deadlocks
+          history: 7d
+          description: 'The count of deadlocks. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.deadlock.total
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: network
+            - tag: component
+              value: operations
+        - uuid: 2ec9448eb0fe470483102443293cc92b
+          name: 'DTU percentage'
+          type: DEPENDENT
+          key: azure.db.mssql.dtu.consumption.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'DTU Percentage. Applies to DTU-based databases.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.dtu_consumption_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: dtu
+        - uuid: 63aa611d9a364c07b141d56aaefe6ffc
+          name: 'DTU limit'
+          type: DEPENDENT
+          key: azure.db.mssql.dtu.limit
+          history: 7d
+          value_type: FLOAT
+          description: 'DTU Limit. Applies to DTU-based databases.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.dtu_limit.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: dtu
+        - uuid: 5ec4d92c804a487784f4c6f364264259
+          name: 'DTU used'
+          type: DEPENDENT
+          key: azure.db.mssql.dtu.used
+          history: 7d
+          value_type: FLOAT
+          description: 'DTU used. Applies to DTU-based databases.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.dtu_used.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: dtu
+        - uuid: d071b5fb562c4105b7c426da4bfa1d06
+          name: 'Connections blocked by firewall'
+          type: DEPENDENT
+          key: azure.db.mssql.firewall.blocked
+          history: 7d
+          description: 'The count of connections blocked by firewall.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.blocked_by_firewall.total
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: network
+        - uuid: 13877d732c1e4ea492e5a48c39259885
+          name: 'SQL instance CPU percent'
+          type: DEPENDENT
+          key: azure.db.mssql.instance.cpu.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'CPU usage by all user and system workloads. Not applicable to data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.sql_instance_cpu_percent.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: cpu
+            - tag: component
+              value: server
+        - uuid: 522d02fe677d4a66aad460bfc0dd7aa1
+          name: 'SQL instance memory percent'
+          type: DEPENDENT
+          key: azure.db.mssql.instance.memory.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'Memory usage by the database engine instance. Not applicable to data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.sql_instance_memory_percent.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: memory
+            - tag: component
+              value: server
+        - uuid: 0b4d5e62b06a4b25989ddaa9225f10aa
+          name: 'Log IO percentage'
+          type: DEPENDENT
+          key: azure.db.mssql.log.write.percentage
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The percentage of I/O log. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.log_write_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: log
+            - tag: component
+              value: operations
+        - uuid: 94fb78adbfb0427798a8dd4c0aa8a2b4
+          name: 'SQL Server process core percent'
+          type: DEPENDENT
+          key: azure.db.mssql.server.cpu.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'CPU usage as a percentage of the SQL DB process. Not applicable to data warehouses. (This metric is equivalent to sql_instance_cpu_percent, and will be removed in the future.)'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.sqlserver_process_core_percent.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: cpu
+            - tag: component
+              value: server
+        - uuid: 94c5ec4e6be04a98bc7a512807c28e22
+          name: 'SQL Server process memory percent'
+          type: DEPENDENT
+          key: azure.db.mssql.server.memory.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'Memory usage as a percentage of the SQL DB process. Not applicable to data warehouses. (This metric is equivalent to sql_instance_memory_percent, and will be removed in the future.)'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.sqlserver_process_memory_percent.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: memory
+            - tag: component
+              value: server
+        - uuid: fe46396bf402407ab1621f43253fd5c7
+          name: 'Sessions count'
+          type: DEPENDENT
+          key: azure.db.mssql.sessions.count
+          history: 7d
+          value_type: FLOAT
+          description: 'The number of active sessions. Not applicable to Synapse DW Analytics.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.sessions_count.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: sessions
+        - uuid: d589708656a44ebebd3df4b53a084abb
+          name: 'Sessions percentage'
+          type: DEPENDENT
+          key: azure.db.mssql.sessions.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The percentage of sessions. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.sessions_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: sessions
+        - uuid: 544527e19a694d8c9eba3d94cc47f0db
+          name: 'Data space allocated'
+          type: DEPENDENT
+          key: azure.db.mssql.storage.allocated
+          history: 7d
+          value_type: FLOAT
+          units: B
+          description: 'The allocated data storage. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.allocated_data_storage.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+        - uuid: d11b638e92704b7ebb3d7030cf5255b9
+          name: 'Data space used percent'
+          type: DEPENDENT
+          key: azure.db.mssql.storage.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'Data space used percent. Not applicable to the data warehouses or Hyperscale databases.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.storage_percent.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+          triggers:
+            - uuid: 16d5084a223544f7b04a0f17365fa932
+              expression: 'min(/Azure Microsoft SQL Database by HTTP/azure.db.mssql.storage.percent,1h)>={$DB_STORAGE}'
+              name: 'Storage space available for this database is too low'
+              priority: WARNING
+              manual_close: 'YES'
+        - uuid: d1fd5146dbc14ceaacf5d056a3b50257
+          name: 'Data space used'
+          type: DEPENDENT
+          key: azure.db.mssql.storage.used
+          history: 7d
+          value_type: FLOAT
+          units: B
+          description: 'Data space used. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.storage.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+        - uuid: f48f6163e32848bc8ea5e16045e21d00
+          name: 'In-Memory OLTP storage percent'
+          type: DEPENDENT
+          key: azure.db.mssql.storage.xtp.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'In-Memory OLTP storage percent. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.xtp_storage_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 73b8f625984e4269aa734338d2870fa2
+          name: 'Tempdb data file size'
+          type: DEPENDENT
+          key: azure.db.mssql.tempdb.data.size
+          history: 7d
+          value_type: FLOAT
+          units: B
+          description: 'The space used in `tempdb` data files, expressed in bytes. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.tempdb_data_size.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+        - uuid: bfb0bbd2de8c45678cacba9f4119b29c
+          name: 'Tempdb log used percent'
+          type: DEPENDENT
+          key: azure.db.mssql.tempdb.log.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The percentage of space used in `tempdb` transaction log file. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.tempdb_log_used_percent.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+        - uuid: dd5c00e10be6405c9fd4a865fdbd6a9f
+          name: 'Tempdb log file size'
+          type: DEPENDENT
+          key: azure.db.mssql.tempdb.log.size
+          history: 7d
+          value_type: FLOAT
+          units: B
+          description: 'The space used in `tempdb` transaction log file, expressed in bytes. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.tempdb_log_size.maximum
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: storage
+        - uuid: 1c9196915da54eca88d3bb77da244345
+          name: 'Workers percentage'
+          type: DEPENDENT
+          key: azure.db.mssql.workers.percent
+          history: 7d
+          value_type: FLOAT
+          units: '%'
+          description: 'The percentage of workers. Not applicable to the data warehouses.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics.workers_percent.average
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: azure.db.mssql.data.get
+          tags:
+            - tag: component
+              value: workers
+      tags:
+        - tag: datasource
+          value: azure
+        - tag: resource
+          value: mssql
+        - tag: type
+          value: http
+      macros:
+        - macro: '{$AZURE.APP.ID}'
+          description: 'The App ID of Microsoft Azure.'
+        - macro: '{$AZURE.DATA.TIMEOUT}'
+          value: 15s
+          description: 'A response timeout for API.'
+        - macro: '{$AZURE.PASSWORD}'
+          type: SECRET_TEXT
+          description: 'Microsoft Azure password.'
+        - macro: '{$AZURE.PROXY}'
+          description: 'Sets HTTP proxy value. If this macro is empty then no proxy is used.'
+        - macro: '{$AZURE.RESOURCE.ID}'
+          description: 'Microsoft Azure Microsoft SQL database ID.'
+        - macro: '{$AZURE.SUBSCRIPTION.ID}'
+          description: 'Microsoft Azure subscription ID.'
+        - macro: '{$AZURE.TENANT.ID}'
+          description: 'Microsoft Azure tenant ID.'
+        - macro: '{$DB_CPU}'
+          value: '90'
+        - macro: '{$DB_MEM}'
+          value: '90'
+        - macro: '{$DB_STORAGE}'
+          value: '95'
+      dashboards:
+        - uuid: c968d2cdf86c46c499776d5d7e5e224d
+          name: 'Overview Azure Microsoft SQL Database'
+          pages:
+            - widgets:
+                - type: item
+                  name: Deadlocks
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: INTEGER
+                      name: decimal_places
+                      value: '0'
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.deadlocks
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'SQL Server process memory percent'
+                  'y': '3'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.server.memory.percent
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                    - type: STRING
+                      name: units
+                      value: '%'
+                - type: item
+                  name: 'CPU limit'
+                  'y': '6'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'Data space allocated'
+                  'y': '9'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP
+                        key: azure.db.mssql.storage.allocated
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'Connections successful'
+                  'y': '12'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.connections.successful
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'Availability state'
+                  x: '12'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                    - type: STRING
+                      name: up_color
+                      value: FF0000
+                - type: item
+                  name: 'SQL Server process core percent'
+                  x: '12'
+                  'y': '3'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP
+                        key: azure.db.mssql.server.cpu.percent
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                    - type: STRING
+                      name: units
+                      value: '%'
+                - type: item
+                  name: 'CPU used'
+                  x: '12'
+                  'y': '6'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'Data space used'
+                  x: '12'
+                  'y': '9'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.storage.used
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'Connections failed: System errors'
+                  x: '12'
+                  'y': '12'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.connections.failed.system
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: itemhistory
+                  name: 'Availability status detailed'
+                  x: '24'
+                  width: '48'
+                  height: '3'
+                  fields:
+                    - type: INTEGER
+                      name: columns.0.display
+                      value: '4'
+                    - type: INTEGER
+                      name: columns.0.monospace_font
+                      value: '1'
+                    - type: STRING
+                      name: columns.0.name
+                      value: 'Azure Microsoft SQL: Availability status detailed'
+                    - type: STRING
+                      name: reference
+                      value: BAAAG
+                    - type: INTEGER
+                      name: show_timestamp
+                      value: '1'
+                - type: item
+                  name: 'Sessions count'
+                  x: '24'
+                  'y': '3'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.sessions.count
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: graph
+                  name: 'Percentage CPU'
+                  x: '24'
+                  'y': '6'
+                  width: '48'
+                  height: '3'
+                  fields:
+                    - type: STRING
+                      name: reference
+                      value: AAAAA
+                - type: graph
+                  name: 'Storage utilization'
+                  x: '24'
+                  'y': '9'
+                  width: '48'
+                  height: '3'
+                  fields:
+                    - type: STRING
+                      name: reference
+                      value: AAAAB
+                - type: graph
+                  name: Connections
+                  x: '24'
+                  'y': '12'
+                  width: '48'
+                  height: '3'
+                  fields:
+                    - type: STRING
+                      name: reference
+                      value: AAAAC
+                - type: item
+                  name: 'Workers percentage'
+                  x: '36'
+                  'y': '3'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.workers.percent
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                    - type: STRING
+                      name: units
+                      value: '%'
+                - type: item
+                  name: 'Full backup storage size'
+                  x: '48'
+                  'y': '3'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                - type: item
+                  name: 'Data IO percentage'
+                  x: '60'
+                  'y': '3'
+                  width: '12'
+                  height: '3'
+                  fields:
+                    - type: ITEM
+                      name: itemid.0
+                      value:
+                        host: 'Azure Microsoft SQL Database by HTTP'
+                        key: azure.db.mssql.data.read.percentage
+                    - type: INTEGER
+                      name: show.0
+                      value: '4'
+                    - type: INTEGER
+                      name: show.1
+                      value: '2'
+                    - type: STRING
+                      name: units
+                      value: '%'
+      valuemaps:
+        - uuid: 304747c8d388446c9cb25b1f8d9b95ff
+          name: 'Azure resource health state'
+          mappings:
+            - value: '0'
+              newvalue: Available
+            - value: '1'
+              newvalue: Degraded
+            - value: '2'
+              newvalue: Unavailable
+            - value: '3'
+              newvalue: Unknown

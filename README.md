@@ -13,7 +13,7 @@ I am constantly updating new files or even changing the ones already here if I f
 Have fun!
 
 ### Disclaimer
-⚠️You should know, all my codes are based on Zabbix >7.0⚠️
+⚠️You should know, my codes are based on Zabbix >7.0⚠️
 
 🤷🏾‍♀️ It may work on older versions but I am not sure 🤷🏾‍♀️
 

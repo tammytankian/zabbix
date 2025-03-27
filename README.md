@@ -1,6 +1,6 @@
 # Welcome to my Zabbix repository 😎
 
-Here I save my custom templates. 🔎
+Here I save my custom templates and some nice scripts I created 🔎
 
 ‼️ Keep in mind I dont like to add that many triggers, as I think that is very particular for each person. ‼️
 

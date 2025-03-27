@@ -1,4 +1,4 @@
-# Welcome to my template repository 😎
+# Welcome to my Zabbix repository 😎
 
 Here I save my custom templates. 🔎
 

@@ -1,0 +1,13 @@
+This python code uses "requests", "json", and "urllib3" libraries.
+
+At this moment I am skipping SSL check on my Zabbix URL. Reenable if you want/need.
+
+Remember to replace Zabbix URL and API token with enough permissions.
+
+Also, my tree is based on host tags, and looks like
+Environment (no parent)
+  └── Version (child of Environment)
+        └── Client (child of Version) with both service and problem tags.
+Change as needed
+
+Hope this code helps!

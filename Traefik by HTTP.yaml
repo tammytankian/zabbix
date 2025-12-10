@@ -5,7 +5,7 @@ zabbix_export:
       name: Templates/Applications
   templates:
     - uuid: 9ecb9408bf0f4445b217e75ea5e24d00
-      template: 'App Traefik by HTTP'
+      template: 'Traefik by HTTP'
       name: 'App Traefik by HTTP'
       description: |
         Make sure your traefik config file has those parameters, so zabbix can collect the metrics:

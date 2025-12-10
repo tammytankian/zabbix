@@ -1,0 +1,2821 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: aa8e704a8229434abf25b58f98161f62
+      name: Templates/Applications
+  templates:
+    - uuid: 9ecb9408bf0f4445b217e75ea5e24d00
+      template: 'App Traefik by HTTP'
+      name: 'App Traefik by HTTP'
+      description: |
+        Make sure your traefik config file has those parameters, so zabbix can collect the metrics:
+        
+        entryPoints:
+          websecure:
+            address: ":443"
+          dashboard:
+            address: ":8443"
+          api-internal:
+            address: ":80"
+        
+        api:
+          dashboard: true
+        
+        metrics:
+          prometheus:
+            addEntryPointsLabels: true
+            addServicesLabels: true
+            addRoutersLabels: true
+            entryPoint: api-internal
+        
+        ping:
+          entryPoint: api-internal
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 35569595148c4ecbbe7c7b555ef30dd8
+          name: 'Traefik: StripPrefix middlewares count'
+          type: DEPENDENT
+          key: traefik.api.middleware.stripprefix.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var mws = root.middlewares || {};
+                  var count = 0;
+                  
+                  for (var m in mws) {
+                    if (!mws.hasOwnProperty(m)) continue;
+                    if (mws[m].stripPrefix) count++;
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: middleware
+            - tag: data
+              value: api
+        - uuid: daf1f30bd3214311876b58868323fd2f
+          name: 'Traefik: /api/rawdata'
+          type: HTTP_AGENT
+          key: traefik.api.rawdata
+          history: '0'
+          value_type: TEXT
+          description: 'Raw JSON from Traefik /api/rawdata endpoint.'
+          timeout: '{$TRAEFIK.HTTP.TIMEOUT}'
+          url: '{$TRAEFIK.API.SCHEME}://{$TRAEFIK.API.HOST}:{$TRAEFIK.API.PORT}{$TRAEFIK.API.PATH}/api/rawdata'
+          tags:
+            - tag: component
+              value: api
+            - tag: type
+              value: raw
+          triggers:
+            - uuid: 324acecd046a4154966c3bffb15f6bf8
+              expression: 'nodata(/App Traefik by HTTP/traefik.api.rawdata,{$TRAEFIK.API.NODATA})=1'
+              name: 'Traefik: no data from /api/rawdata'
+              priority: WARNING
+              description: 'Zabbix has not received data from /api/rawdata for configured time.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 20ec3c25b0f94aa4ab10c2bb8968024f
+          name: 'Traefik: routers without middlewares'
+          type: DEPENDENT
+          key: traefik.api.routers.nomiddleware.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var routers = root.routers || {};
+                  var count = 0;
+                  
+                  for (var r in routers) {
+                    if (!routers.hasOwnProperty(r)) continue;
+                    var mws = routers[r].middlewares;
+                    if (!Array.isArray(mws) || mws.length === 0) {
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: middleware
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: 513188b942b04717a60cdfda89b48a1a
+          name: 'Traefik: routers without TLS on websecure'
+          type: DEPENDENT
+          key: traefik.api.routers.notls.websecure.count
+          history: 30d
+          description: 'Number of HTTP routers defined in Traefik.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var routers = root.routers || {};
+                  var count = 0;
+                  
+                  for (var r in routers) {
+                    if (!routers.hasOwnProperty(r)) continue;
+                  
+                    var rt = routers[r];
+                    var eps = rt.entryPoints || [];
+                  
+                    if (eps.indexOf("websecure") !== -1) {
+                      if (!rt.tls || Object.keys(rt.tls).length === 0) {
+                        count++;
+                      }
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: f068ca1593944a2ca8c604bec5ed9a71
+          name: 'Traefik: routers per entrypoint (map)'
+          type: DEPENDENT
+          key: traefik.api.routers.per.entrypoint.map
+          value_type: TEXT
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var routers = root.routers || {};
+                  var result = {};
+                  
+                  for (var r in routers) {
+                    if (!routers.hasOwnProperty(r)) continue;
+                    var eps = routers[r].entryPoints || [];
+                    for (var i = 0; i < eps.length; i++) {
+                      var ep = eps[i];
+                      if (!result[ep]) result[ep] = 0;
+                      result[ep]++;
+                    }
+                  }
+                  
+                  return JSON.stringify(result);
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: 3055c2e4209047829622520c473253e7
+          name: 'Traefik: routers using StripPrefix'
+          type: DEPENDENT
+          key: traefik.api.routers.using.stripprefix.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var routers = root.routers || {};
+                  var mws = root.middlewares || {};
+                  var stripMws = {};
+                  
+                  for (var m in mws) {
+                    if (mws[m].stripPrefix) stripMws[m] = true;
+                  }
+                  
+                  var count = 0;
+                  for (var r in routers) {
+                    if (!routers.hasOwnProperty(r)) continue;
+                    var mids = routers[r].middlewares || [];
+                    for (var i = 0; i < mids.length; i++) {
+                      if (stripMws[mids[i]]) {
+                        count++;
+                        break;
+                      }
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: 034ab8dfcbdc45a9b2b0db9d51374972
+          name: 'Traefik: orphan services count'
+          type: DEPENDENT
+          key: traefik.api.services.orphan.count
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var services = root.services || {};
+                  var routers = root.routers || {};
+                  
+                  var used = {};
+                  for (var r in routers) {
+                    if (!routers.hasOwnProperty(r)) continue;
+                    var svc = routers[r].service;
+                    if (svc) used[svc] = true;
+                  }
+                  
+                  var orphan = 0;
+                  for (var s in services) {
+                    if (!services.hasOwnProperty(s)) continue;
+                    if (!used[s]) orphan++;
+                  }
+                  
+                  return orphan;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: service
+            - tag: data
+              value: api
+        - uuid: df5318a56dca4b45b1ab0e59989aef04
+          name: 'Traefik: StripPrefix router coverage ratio'
+          type: CALCULATED
+          key: traefik.api.stripprefix.coverage.ratio
+          history: 30d
+          params: '100*last(//traefik.api.routers.using.stripprefix.count)/max(last(//traefik.routers.enabled.count),1)'
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: calculated
+        - uuid: ad1bc592459b458b8e54042a66324e88
+          name: 'Traefik: last config reload success flag'
+          type: DEPENDENT
+          key: traefik.config.reload.last_success
+          history: 30d
+          value_type: FLOAT
+          description: '1 = last config reload succeeded, 0 = last reload failed.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - traefik_config_last_reload_success
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: 'config reload'
+            - tag: data
+              value: prometheus
+        - uuid: fe54432df9dd417cb20cef5988d6ac3b
+          name: 'Traefik: config reloads total'
+          type: DEPENDENT
+          key: traefik.config.reload.total
+          history: 30d
+          value_type: FLOAT
+          description: 'Total number of config reloads in Traefik.'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - traefik_config_reloads_total
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: 'config reload'
+            - tag: data
+              value: prometheus
+        - uuid: 1acf1c9f317a44b78a9d6fae052af88a
+          name: 'Traefik: Go GC cycles per second'
+          type: DEPENDENT
+          key: traefik.go.gc.cycles
+          history: 7d
+          trends: 30d
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - go_gc_duration_seconds_count
+                - value
+                - ''
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: data
+              value: prometheus
+        - uuid: 19e29ed9add5445d8dec569d62ee6db9
+          name: 'Traefik: Go GC pause time per second'
+          type: DEPENDENT
+          key: traefik.go.gc.pause
+          history: 7d
+          trends: 30d
+          units: s/s
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - go_gc_duration_seconds_sum
+                - value
+                - ''
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: data
+              value: prometheus
+        - uuid: fbba28663f524d37aa4d5f2b15b42863
+          name: 'Traefik: Go goroutines'
+          type: DEPENDENT
+          key: traefik.go.goroutines
+          history: 7d
+          trends: 30d
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - go_goroutines
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: data
+              value: prometheus
+        - uuid: 59451ca3513f42ccb7d337ad011c5053
+          name: 'Traefik: Go heap allocated'
+          type: DEPENDENT
+          key: traefik.go.mem.alloc
+          history: 7d
+          trends: 30d
+          units: B
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - go_memstats_alloc_bytes
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (data.length === 0) return 0;
+                  return parseFloat(data[0].value);
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: data
+              value: prometheus
+        - uuid: 9607ec131751442ba8ccc1d38ddb727b
+          name: 'Traefik: Go heap idle'
+          type: DEPENDENT
+          key: traefik.go.mem.heap_idle
+          history: 7d
+          trends: 30d
+          units: B
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - go_memstats_heap_idle_bytes
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: data
+              value: prometheus
+        - uuid: 957cdaeab13f4fab802a96284e0ae7b2
+          name: 'Traefik: Go heap in use'
+          type: DEPENDENT
+          key: traefik.go.mem.heap_inuse
+          history: 7d
+          trends: 30d
+          units: B
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - go_memstats_heap_inuse_bytes
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (data.length === 0) return 0;
+                  return parseFloat(data[0].value);
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: data
+              value: prometheus
+        - uuid: e732501b9a8f4016bfd0b4711ef7d876
+          name: 'Traefik: HTTP incoming bytes per second (all services)'
+          type: DEPENDENT
+          key: traefik.http.bytes.in
+          value_type: FLOAT
+          units: Bps
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_requests_bytes_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (!Array.isArray(data) || data.length === 0) {
+                    return 0;
+                  }
+                  
+                  var sum = 0;
+                  for (var i = 0; i < data.length; i++) {
+                    var v = parseFloat(data[i].value);
+                    if (!isNaN(v)) {
+                      sum += v;
+                    }
+                  }
+                  return sum;
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: 'http data'
+            - tag: component
+              value: service
+            - tag: data
+              value: prometheus
+        - uuid: 6706dbb8e8df4a3198544c463446e84a
+          name: 'Traefik: HTTP outgoing bytes per second (all services)'
+          type: DEPENDENT
+          key: traefik.http.bytes.out
+          value_type: FLOAT
+          units: Bps
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_responses_bytes_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (!Array.isArray(data) || data.length === 0) {
+                    return 0;
+                  }
+                  
+                  var sum = 0;
+                  for (var i = 0; i < data.length; i++) {
+                    var v = parseFloat(data[i].value);
+                    if (!isNaN(v)) {
+                      sum += v;
+                    }
+                  }
+                  return sum;
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: 'http data'
+            - tag: component
+              value: service
+            - tag: data
+              value: prometheus
+        - uuid: c5d8b6619f174e7796133c845039f936
+          name: 'Traefik: HTTP 5xx error rate (all services)'
+          type: DEPENDENT
+          key: traefik.http.errors.5xx.rps
+          history: 7d
+          value_type: FLOAT
+          trends: 30d
+          description: 'Overall 5xx error rate (requests per second) across all services.'
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_requests_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (!Array.isArray(data) || data.length === 0) {
+                    return 0;
+                  }
+                  
+                  var sum = 0;
+                  
+                  for (var i = 0; i < data.length; i++) {
+                    var labels = data[i].labels || {};
+                    var code = labels.code || "";
+                    if (/^5../.test(code)) {
+                      var v = parseFloat(data[i].value);
+                      if (!isNaN(v)) {
+                        sum += v;
+                      }
+                    }
+                  }
+                  
+                  return sum;
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: 'http data'
+            - tag: component
+              value: service
+            - tag: data
+              value: prometheus
+          triggers:
+            - uuid: 24b9ec5635554e93a637a4893265e1e9
+              expression: 'avg(/App Traefik by HTTP/traefik.http.errors.5xx.rps,5m)>{$TRAEFIK.SVC.ERROR.RATE.CRIT}'
+              name: 'Traefik: high global 5xx error rate (critical)'
+              priority: HIGH
+              description: 'Global 5xx error rate is above critical threshold.'
+              tags:
+                - tag: scope
+                  value: error
+            - uuid: 56ee632e021045699db0c836a8942663
+              expression: 'avg(/App Traefik by HTTP/traefik.http.errors.5xx.rps,5m)>{$TRAEFIK.SVC.ERROR.RATE.WARN}'
+              name: 'Traefik: high global 5xx error rate (warning)'
+              priority: WARNING
+              description: 'Global 5xx error rate is above warning threshold.'
+              tags:
+                - tag: scope
+                  value: error
+        - uuid: 4cc2d9617b60442ea839c36012512c7f
+          name: 'Traefik: average HTTP request size (global)'
+          type: CALCULATED
+          key: traefik.http.req.size.avg
+          history: 7d
+          value_type: FLOAT
+          trends: 30d
+          units: B
+          params: 'last(//traefik.http.bytes.in)/max(last(//traefik.http.requests.rps),1)'
+          tags:
+            - tag: component
+              value: 'http data'
+            - tag: data
+              value: calculated
+        - uuid: 6dfd2f972d044218b51b02f36ecbcf3b
+          name: 'Traefik: HTTP requests per second (all services)'
+          type: DEPENDENT
+          key: traefik.http.requests.rps
+          history: 7d
+          value_type: FLOAT
+          trends: 30d
+          description: 'Total HTTP requests per second across all Traefik services.'
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_requests_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (!Array.isArray(data) || data.length === 0) {
+                    return 0;  // nothing yet = no traffic
+                  }
+                  
+                  var sum = 0;
+                  
+                  for (var i = 0; i < data.length; i++) {
+                    var v = parseFloat(data[i].value);
+                    if (!isNaN(v)) {
+                      sum += v;
+                    }
+                  }
+                  
+                  return sum;
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: 'http data'
+            - tag: component
+              value: service
+            - tag: data
+              value: prometheus
+        - uuid: 75b6dff4f3be45a198d9b72733fec157
+          name: 'Traefik: TLS requests per second (all services)'
+          type: DEPENDENT
+          key: traefik.http.tls.rps
+          history: 7d
+          value_type: FLOAT
+          trends: 30d
+          units: req/s
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_requests_tls_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (!Array.isArray(data) || data.length === 0) {
+                    return 0;
+                  }
+                  var sum = 0;
+                  for (var i = 0; i < data.length; i++) {
+                    var v = parseFloat(data[i].value);
+                    if (!isNaN(v)) {
+                      sum += v;
+                    }
+                  }
+                  return sum;
+            - type: CHANGE_PER_SECOND
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: component
+              value: 'memory heap'
+            - tag: component
+              value: service
+        - uuid: a6ec39bec26441a1b5fbdfbbd08d039a
+          name: 'Traefik: Prometheus /metrics raw'
+          type: HTTP_AGENT
+          key: traefik.metrics.raw
+          history: 1d
+          value_type: TEXT
+          description: 'Prometheus-style metrics text exposed by Traefik (/metrics).'
+          timeout: '{$TRAEFIK.HTTP.TIMEOUT}'
+          url: '{$TRAEFIK.METRICS.SCHEME}://{$TRAEFIK.METRICS.HOST}:{$TRAEFIK.METRICS.PORT}{$TRAEFIK.METRICS.PATH}'
+          tags:
+            - tag: component
+              value: api
+            - tag: type
+              value: raw
+        - uuid: 4c08daca78a94083a1a12837abbdffba
+          name: 'Traefik: middlewares count'
+          type: DEPENDENT
+          key: traefik.middlewares.count
+          history: 30d
+          description: 'Number of middlewares defined in Traefik.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.middlewares
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var obj = JSON.parse(value);
+                  return Object.keys(obj).length;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: middleware
+            - tag: data
+              value: api
+        - uuid: 6ceb9f2b263a4515ba2a6b40653b4379
+          name: 'Traefik: middlewares disabled'
+          type: DEPENDENT
+          key: traefik.middlewares.disabled.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var mws = root.middlewares || {};
+                  var count = 0;
+                  
+                  for (var name in mws) {
+                    if (!mws.hasOwnProperty(name)) continue;
+                    var st = mws[name].status;
+                    if (st && st !== "enabled") {
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: middleware
+            - tag: data
+              value: api
+        - uuid: 5ca79f5943c54394956ce613c90e80a0
+          name: 'Traefik: middlewares enabled'
+          type: DEPENDENT
+          key: traefik.middlewares.enabled.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var mws = root.middlewares || {};
+                  var count = 0;
+                  
+                  for (var name in mws) {
+                    if (!mws.hasOwnProperty(name)) continue;
+                    if (mws[name].status === "enabled" || mws[name].status === undefined) {
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: middleware
+            - tag: data
+              value: api
+        - uuid: cf267872abac494083014199ce015d88
+          name: 'Traefik: /ping raw response'
+          type: HTTP_AGENT
+          key: traefik.ping.raw
+          history: '0'
+          value_type: CHAR
+          description: 'Raw response body from Traefik /ping endpoint (typically "OK").'
+          timeout: '{$TRAEFIK.HTTP.TIMEOUT}'
+          url: '{$TRAEFIK.API.SCHEME}://{$TRAEFIK.API.HOST}:{$TRAEFIK.API.PORT}{$TRAEFIK.API.PATH}/ping'
+          tags:
+            - tag: component
+              value: api
+            - tag: type
+              value: raw
+        - uuid: 6f8dc614b1ab47689d490033f14a78c2
+          name: 'Traefik: health status'
+          type: DEPENDENT
+          key: traefik.ping.status
+          history: 30d
+          description: '1 = healthy (/ping returns OK), 0 = unhealthy or invalid response.'
+          preprocessing:
+            - type: MATCHES_REGEX
+              parameters:
+                - OK
+            - type: BOOL_TO_DECIMAL
+          master_item:
+            key: traefik.ping.raw
+          tags:
+            - tag: component
+              value: health
+            - tag: data
+              value: ping
+        - uuid: 97460f7fa22f4d0bae4fe5d0b9693f2c
+          name: 'Traefik: process CPU usage'
+          type: DEPENDENT
+          key: traefik.proc.cpu
+          history: 7d
+          value_type: FLOAT
+          trends: 30d
+          units: '%'
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - process_cpu_seconds_total
+                - value
+                - ''
+            - type: CHANGE_PER_SECOND
+            - type: JAVASCRIPT
+              parameters:
+                - 'return value * 100;'
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: cpu
+            - tag: component
+              value: process
+            - tag: data
+              value: prometheus
+        - uuid: cb8b084c484a49cdbbfd852a6617bdaf
+          name: 'Traefik: max file descriptors'
+          type: DEPENDENT
+          key: traefik.proc.fds.max
+          history: 7d
+          trends: 30d
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - process_max_fds
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: component
+              value: memory
+            - tag: data
+              value: prometheus
+        - uuid: 6bf867c1e5af4ce7965cee08bccf1ba3
+          name: 'Traefik: open file descriptors'
+          type: DEPENDENT
+          key: traefik.proc.fds.open
+          history: 7d
+          trends: 30d
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - process_open_fds
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: go
+            - tag: component
+              value: memory
+            - tag: data
+              value: prometheus
+        - uuid: f5d4eb6e1c0c4ed180bd4050985ec39d
+          name: 'Traefik: process resident memory'
+          type: DEPENDENT
+          key: traefik.proc.rss
+          history: 7d
+          value_type: FLOAT
+          trends: 30d
+          units: B
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - process_resident_memory_bytes
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: memory
+            - tag: component
+              value: process
+            - tag: data
+              value: prometheus
+        - uuid: f421f5ebdc08453a9f5069af588efea8
+          name: 'Traefik: process uptime'
+          type: DEPENDENT
+          key: traefik.proc.uptime
+          history: 30d
+          value_type: FLOAT
+          units: s
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - traefik_config_reloads_total
+                - value
+                - ''
+            - type: JAVASCRIPT
+              parameters:
+                - 'return Math.floor(Date.now()/1000 - parseFloat(value));'
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: process
+            - tag: data
+              value: metrics
+        - uuid: d346a27844244088bd19e33a2219df31
+          name: 'Traefik: process virtual memory'
+          type: DEPENDENT
+          key: traefik.proc.vsize
+          history: 7d
+          trends: 30d
+          units: B
+          preprocessing:
+            - type: PROMETHEUS_PATTERN
+              parameters:
+                - process_virtual_memory_bytes
+                - value
+                - ''
+          master_item:
+            key: traefik.metrics.raw
+          tags:
+            - tag: component
+              value: memory
+            - tag: component
+              value: process
+            - tag: data
+              value: prometheus
+        - uuid: 1d202cc50c6c4c58b1a9898075814d04
+          name: 'Traefik: HTTP routers disabled'
+          type: DEPENDENT
+          key: traefik.routers.disabled.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var routers = root.routers || {};
+                  var count = 0;
+                  
+                  for (var name in routers) {
+                    if (!routers.hasOwnProperty(name)) continue;
+                    if (routers[name].status && routers[name].status !== "enabled") {
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: 19af7694f2204afa87bab414c505e6e4
+          name: 'Traefik: HTTP routers enabled'
+          type: DEPENDENT
+          key: traefik.routers.enabled.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var routers = root.routers || {};
+                  var count = 0;
+                  
+                  for (var name in routers) {
+                    if (!routers.hasOwnProperty(name)) continue;
+                    if (routers[name].status === "enabled") {
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: 5af0874c2050497eaa14ffe6cd0b1d6e
+          name: 'Traefik: HTTP routers count'
+          type: DEPENDENT
+          key: traefik.routers.http.count
+          history: 30d
+          description: 'Number of HTTP routers defined in Traefik.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.routers
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var obj = JSON.parse(value);   // value is the JSON string of the "routers" object
+                  return Object.keys(obj).length;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: router
+            - tag: data
+              value: api
+        - uuid: cd62948f453f426d95be47a9bc80b6ac
+          name: 'Traefik: HTTP services disabled'
+          type: DEPENDENT
+          key: traefik.services.disabled.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var services = root.services || {};
+                  var count = 0;
+                  
+                  for (var name in services) {
+                    if (!services.hasOwnProperty(name)) continue;
+                    var st = services[name].status;
+                    if (st && st !== "enabled") {
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: service
+            - tag: data
+              value: api
+        - uuid: 35df7b7b048540fdac0a121364418012
+          name: 'Traefik: HTTP services enabled'
+          type: DEPENDENT
+          key: traefik.services.enabled.count
+          history: 30d
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var root = JSON.parse(value);
+                  var services = root.services || {};
+                  var count = 0;
+                  
+                  for (var name in services) {
+                    if (!services.hasOwnProperty(name)) continue;
+                    if (services[name].status === "enabled" || services[name].status === undefined) {
+                      // internal services often omit 'status', treat as enabled
+                      count++;
+                    }
+                  }
+                  
+                  return count;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: service
+            - tag: data
+              value: api
+        - uuid: 5624e97eb0494f1ba44727deaf416adb
+          name: 'Traefik: HTTP services count'
+          type: DEPENDENT
+          key: traefik.services.http.count
+          history: 30d
+          description: 'Number of HTTP services defined in Traefik.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.services
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var obj = JSON.parse(value);
+                  return Object.keys(obj).length;
+          master_item:
+            key: traefik.api.rawdata
+          tags:
+            - tag: component
+              value: service
+            - tag: data
+              value: api
+      discovery_rules:
+        - uuid: b4ea670b27f749378a556c5b1d1204dc
+          name: 'Traefik backends discovery'
+          type: DEPENDENT
+          key: traefik.backend.discovery
+          enabled_lifetime_type: DISABLE_AFTER
+          enabled_lifetime: 3d
+          item_prototypes:
+            - uuid: 5cd0ff6d4e1147a58981cf4d8ba72b8f
+              name: 'Traefik: incoming bytes per second on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.bytes.in[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_requests_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var url = '{#URL}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === svc && l.url === url) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: d2512cbb90de4b329be1301b5beaf545
+              name: 'Traefik: 5xx error rate on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.errors.5xx.rps[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var url = '{#URL}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        var code = l.code || "";
+                        if (l.service === svc && l.url === url && /^5../.test(code)) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: ffb48332768e4b2a81b15d19c66ec427
+              name: 'Traefik: average request duration on backend {#URL} of service'
+              type: CALCULATED
+              key: 'traefik.server.latency.avg[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              units: s
+              params: |
+                last(//traefik.server.latency.sum[{#SERVICE},{#URL}]) /
+                max(last(//traefik.server.latency.count[{#SERVICE},{#URL}]),1)
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: 7586013b376b423092403813f87c91b9
+              name: 'Traefik: request count for latency on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.latency.count[{#SERVICE},{#URL}]'
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_request_duration_seconds_count
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var url = '{#URL}';
+                      var sum = 0;
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === svc && l.url === url) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: 53890da01fa64583967255e8ffe2feee
+              name: 'Traefik: slow requests (>2s) on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.latency.slow.rps[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_request_duration_seconds_bucket
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var srv = '{#URL}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === svc && l.server === srv && l.le === "2") {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: dc8ad38a5f2f44a9a5738e476d322739
+              name: 'Traefik: request duration sum on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.latency.sum[{#SERVICE},{#URL}]'
+              units: s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_request_duration_seconds_sum
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var url = '{#URL}';
+                      var sum = 0;
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === svc && l.url === url) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: e91fa7c9515e4495b1e95615fc351b88
+              name: 'Traefik: average request size on backend {#URL} of service {#SERVICE}'
+              type: CALCULATED
+              key: 'traefik.server.req.size.avg[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              units: B
+              params: |
+                last(//traefik.server.bytes.in[{#SERVICE},{#URL}]) /
+                max(last(//traefik.server.rps[{#SERVICE},{#URL}]),1)
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: 91b13bf76475465fa7af7aaf76fa72ae
+              name: 'Traefik: total requests on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.requests.total[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var srv = '{#URL}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === svc && l.server === srv) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: af3011e076654bb19bb689f7a72029e4
+              name: 'Traefik: requests per second on backend {#URL} of service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.server.rps[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_server_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var svc = '{#SERVICE}';
+                      var url = '{#URL}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === svc && l.url === url) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: 16429e7b82944c0c9c3abfc83afe92e1
+              name: 'Traefik: backend saturation ratio on {#URL} of service {#SERVICE}'
+              type: CALCULATED
+              key: 'traefik.server.saturation[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              params: 'last(//traefik.server.latency.avg[{#SERVICE},{#URL}]) * last(//traefik.server.rps[{#SERVICE},{#URL}])'
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: be2331e4c3804d9d99e8a120a8459e0d
+              name: 'Traefik: backend traffic share on {#URL} of service {#SERVICE}'
+              type: CALCULATED
+              key: 'traefik.server.traffic.share[{#SERVICE},{#SERVER}]'
+              history: 30d
+              value_type: FLOAT
+              units: '%'
+              params: '100 * last(//traefik.server.rps[{#SERVICE},{#URL}]) / max(last(//traefik.service.rps[{#SERVICE}]),1)'
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+            - uuid: f2a6e947693a481d9bffb4738f63017b
+              name: 'Traefik: backend up state for {#SERVICE} ({#URL})'
+              type: DEPENDENT
+              key: 'traefik.service.backend.up[{#SERVICE},{#URL}]'
+              history: 30d
+              value_type: FLOAT
+              description: 'Backend server up state for service {#SERVICE} URL {#URL} (1 = up, 0 = down).'
+              preprocessing:
+                - type: PROMETHEUS_PATTERN
+                  parameters:
+                    - 'traefik_service_server_up{service="{#SERVICE}",url="{#URL}"}'
+                    - value
+                    - ''
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: backend
+                - tag: component
+                  value: health
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+                - tag: url
+                  value: '{#URL}'
+              trigger_prototypes:
+                - uuid: 0118092ad4f74c0e8602180a7d13e35d
+                  expression: 'min(/App Traefik by HTTP/traefik.service.backend.up[{#SERVICE},{#URL}],2m)=0'
+                  name: 'Traefik: backend down for {#SERVICE} ({#URL})'
+                  priority: HIGH
+                  description: 'Backend server for service {#SERVICE} at {#URL} is down.'
+                  tags:
+                    - tag: scope
+                      value: availability
+                    - tag: service
+                      value: '{#SERVICE}'
+          master_item:
+            key: traefik.metrics.raw
+          lld_macro_paths:
+            - lld_macro: '{#SERVICE}'
+              path: $.labels.service
+            - lld_macro: '{#URL}'
+              path: $.labels.url
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_server_up
+        - uuid: be42dc6a9a3543aa815317bc1bc8ae53
+          name: 'Traefik entrypoints discovery'
+          type: DEPENDENT
+          key: traefik.entrypoint.discovery
+          enabled_lifetime_type: DISABLE_AFTER
+          enabled_lifetime: 3d
+          description: 'Discovers Traefik entrypoints from Prometheus metrics.'
+          item_prototypes:
+            - uuid: 5b15ba9e1af4448e845bfdb4ec2bea2a
+              name: 'Traefik: incoming bytes per second on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.bytes.in[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_entrypoint_requests_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: 55f8a6a0b1fc4bd0b7fa2acb8317d319
+              name: 'Traefik: outgoing bytes per second on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.bytes.out[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_entrypoint_responses_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: 556caf2a668c4bb29e933d49b565d858
+              name: 'Traefik: average latency on entrypoint {#ENTRYPOINT}'
+              type: CALCULATED
+              key: 'traefik.entrypoint.latency.avg[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: s
+              params: |
+                last(//traefik.entrypoint.latency.sum[{#ENTRYPOINT}]) /
+                last(//traefik.entrypoint.latency.count[{#ENTRYPOINT}])
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: 5150acf91989424db3eb13fcda8ac54e
+              name: 'Traefik: request count for latency on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.latency.count[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_entrypoint_request_duration_seconds_count
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: beda5f264476493eaf9caf34c3a5bb75
+              name: 'Traefik: request duration sum on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.latency.sum[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_entrypoint_request_duration_seconds_sum
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: e5f39b8f56c04794961f2eeb378cf22c
+              name: 'Traefik: open connections on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.open_connections[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              description: 'Number of open connections on entrypoint {#ENTRYPOINT}.'
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_open_connections
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: a30814bb85664bb5b7813d5ea2dc576d
+              name: 'Traefik: requests per second on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.rps[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              description: 'Requests per second on entrypoint {#ENTRYPOINT}.'
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_entrypoint_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+            - uuid: 261acfe35e904fb6be8313c3db25bfe1
+              name: 'Traefik: TLS requests per second on entrypoint {#ENTRYPOINT}'
+              type: DEPENDENT
+              key: 'traefik.entrypoint.tls.rps[{#ENTRYPOINT}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_entrypoint_requests_tls_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var ep = '{#ENTRYPOINT}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.entrypoint === ep) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: entrypoint
+                  value: '{#ENTRYPOINT}'
+          master_item:
+            key: traefik.metrics.raw
+          lld_macro_paths:
+            - lld_macro: '{#ENTRYPOINT}'
+              path: '$.labels[''entrypoint'']'
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_entrypoint_requests_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // value is a JSON string array produced by PROMETHEUS_TO_JSON
+                  var data = JSON.parse(value);
+                  var seen = {};
+                  var result = [];
+                  
+                  for (var i = 0; i < data.length; i++) {
+                    var ep = data[i].labels && data[i].labels.entrypoint;
+                    if (!ep) {
+                      continue;
+                    }
+                  
+                    // if we haven’t seen this entrypoint yet, keep this row
+                    if (!seen[ep]) {
+                      seen[ep] = true;
+                      result.push(data[i]);
+                    }
+                  }
+                  
+                  return JSON.stringify(result);
+        - uuid: ff74372187a44f1cbc504f7af9fa148e
+          name: 'Traefik routers discovery'
+          type: DEPENDENT
+          key: traefik.router.discovery
+          enabled_lifetime_type: DISABLE_AFTER
+          enabled_lifetime: 3d
+          item_prototypes:
+            - uuid: f7dbe200d4424be38e92c1d33e3c741b
+              name: 'Traefik: incoming bytes per second on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.bytes.in[{#ROUTER}]'
+              value_type: FLOAT
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_requests_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.router === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: e4fd014cfdba4b48871a6d4653b3a56a
+              name: 'Traefik: outgoing bytes per second on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.bytes.out[{#ROUTER}]'
+              value_type: FLOAT
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_responses_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.router === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: 2fef54da033944cf84247266f3749dc9
+              name: 'Traefik: 5xx error rate on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.errors.5xx.rps[{#ROUTER}]'
+              value_type: FLOAT
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        var code = labels.code || "";
+                        if (labels.router === target && /^5../.test(code)) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: aac75b66d4fb42178f77a4a8def9f538
+              name: 'Traefik: average request duration on router {#ROUTER}'
+              type: CALCULATED
+              key: 'traefik.router.latency.avg[{#ROUTER}]'
+              value_type: FLOAT
+              units: s
+              params: |
+                last(//traefik.router.latency.sum[{#ROUTER}]) /
+                last(//traefik.router.latency.count[{#ROUTER}])
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: 008f512ade654938a5a6ef8d7ff88d29
+              name: 'Traefik: request count for latency on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.latency.count[{#ROUTER}]'
+              value_type: FLOAT
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_request_duration_seconds_count
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.router === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: 0b602850a62c422b9d75edc89e1a6c54
+              name: 'Traefik: request duration sum on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.latency.sum[{#ROUTER}]'
+              value_type: FLOAT
+              units: s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_request_duration_seconds_sum
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.router === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: c7c98ba01bc14e64a23d690db2c8656e
+              name: 'Traefik: average HTTP request size on router {#ROUTER}'
+              type: CALCULATED
+              key: 'traefik.router.req.size.avg[{#ROUTER}]'
+              value_type: FLOAT
+              units: B
+              params: 'last(//traefik.router.bytes.in[{#ROUTER}])/max(last(//traefik.router.rps[{#ROUTER}]),1)'
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: 02ce4ded0b014647a139055b2c787aef
+              name: 'Traefik: requests per second on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.rps[{#ROUTER}]'
+              value_type: FLOAT
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.router === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+            - uuid: bfbd35f8f46b43aeabd423ef5b34b9e9
+              name: 'Traefik: TLS requests per second on router {#ROUTER}'
+              type: DEPENDENT
+              key: 'traefik.router.tls.rps[{#ROUTER}]'
+              value_type: FLOAT
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_router_requests_tls_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#ROUTER}';
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.router === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: router
+                  value: '{#ROUTER}'
+          master_item:
+            key: traefik.metrics.raw
+          lld_macro_paths:
+            - lld_macro: '{#ROUTER}'
+              path: '$.labels[''router'']'
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_router_requests_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  if (!Array.isArray(data) || data.length === 0) {
+                    return "[]";
+                  }
+                  
+                  var seen = {};
+                  var result = [];
+                  
+                  for (var i = 0; i < data.length; i++) {
+                    var r = data[i].labels && data[i].labels.router;
+                    if (!r) continue;
+                  
+                    if (!seen[r]) {
+                      seen[r] = true;
+                      result.push(data[i]);
+                    }
+                  }
+                  
+                  return JSON.stringify(result);
+        - uuid: 32687ec572ba4f7a81a53bf81dfd4ceb
+          name: 'Traefik services discovery'
+          type: DEPENDENT
+          key: traefik.service.discovery
+          enabled_lifetime_type: DISABLE_AFTER
+          enabled_lifetime: 3d
+          description: 'Discovers Traefik HTTP services from Prometheus metrics.'
+          item_prototypes:
+            - uuid: c2e4d83c02554ef5bfe961302e1aa658
+              name: 'Traefik: average request duration on service {#SERVICE}'
+              type: CALCULATED
+              key: 'raefik.service.latency.avg[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: s
+              params: |
+                last(//traefik.service.latency.sum[{#SERVICE}]) /
+                last(//traefik.service.latency.count[{#SERVICE}])
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: 866c11e2a02f47a68d08ed74d1a85da6
+              name: 'Traefik: backend servers configured for service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.backends.count[{#SERVICE}]'
+              history: 7d
+              trends: 30d
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var root = JSON.parse(value);
+                      var svcName = '{#SERVICE}';
+                      var services = root.services || {};
+                      var svc = services[svcName];
+                      
+                      if (!svc || !svc.loadBalancer || !svc.loadBalancer.servers) {
+                        // No explicit backend servers (could be internal/prometheus etc.)
+                        return 0;
+                      }
+                      
+                      var servers = svc.loadBalancer.servers;
+                      if (!Array.isArray(servers)) {
+                        return 0;
+                      }
+                      
+                      return servers.length;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: ca85cae62a164f168567a744d0a1b4aa
+              name: 'Traefik: incoming bytes per second on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.bytes.in[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_requests_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.service === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: c2c118775b784c0ab20ddfb3a8aced8e
+              name: 'Traefik: outgoing bytes per second on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.bytes.out[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: Bps
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_responses_bytes_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.service === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: 896756c4a10e4b6f8e15db62b554a18d
+              name: 'Traefik: 5xx error rate on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.errors.5xx.rps[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              description: '5xx error rate (req/s) on service {#SERVICE}.'
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        var code = labels.code || "";
+                      
+                        if (labels.service === target && /^5../.test(code)) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+              trigger_prototypes:
+                - uuid: 9e5127e5bd4341509855d653fdf03cda
+                  expression: 'avg(/App Traefik by HTTP/traefik.service.errors.5xx.rps[{#SERVICE}],5m)>{$TRAEFIK.SVC.ERROR.RATE.CRIT}'
+                  name: 'Traefik: high 5xx error rate on service {#SERVICE} (critical)'
+                  priority: HIGH
+                  description: '5xx error rate on service {#SERVICE} is above critical threshold.'
+                  tags:
+                    - tag: scope
+                      value: error
+                    - tag: service
+                      value: '{#SERVICE}'
+                - uuid: fd3fe19b726b4ce49bc79eb6b3209cb8
+                  expression: 'avg(/App Traefik by HTTP/traefik.service.errors.5xx.rps[{#SERVICE}],5m)>{$TRAEFIK.SVC.ERROR.RATE.WARN}'
+                  name: 'Traefik: high 5xx error rate on service {#SERVICE} (warning)'
+                  priority: WARNING
+                  description: '5xx error rate on service {#SERVICE} is above warning threshold.'
+                  tags:
+                    - tag: scope
+                      value: error
+                    - tag: service
+                      value: '{#SERVICE}'
+            - uuid: f7537c52d713408e886c7ca8cb5f1ffd
+              name: 'Traefik: request count for latency on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.latency.count[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_request_duration_seconds_count
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.service === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: d5864a6b9257469fbfedd046c7685390
+              name: 'Traefik: slow requests (>2s) RPS on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.latency.slow.rps[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_request_duration_seconds_bucket
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (
+                          labels.service === target &&
+                          labels.le === "2"
+                        ) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+              trigger_prototypes:
+                - uuid: 92ffc99cf6a04144b1dead069873aa23
+                  expression: 'avg(/App Traefik by HTTP/traefik.service.latency.slow.rps[{#SERVICE}],5m) > 1'
+                  name: 'Traefik: high slow-request rate on service {#SERVICE}'
+                  priority: WARNING
+                  manual_close: 'YES'
+            - uuid: 36e7568484c54bc589eae0b87ffe0fb7
+              name: 'Traefik: request duration sum on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.latency.sum[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_request_duration_seconds_sum
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.service === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: d2699fd434714c95b668d201e9c21228
+              name: 'Traefik: large requests (>1MB) RPS on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.req.big.rps[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_request_size_bytes_bucket
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var l = data[i].labels || {};
+                        if (l.service === target && l.le === "1e+06") {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: e6c40d6bfa8b4b139b5199895940678a
+              name: 'Traefik: average HTTP request size on service {#SERVICE}'
+              type: CALCULATED
+              key: 'traefik.service.req.size.avg[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: B
+              params: 'last(//traefik.service.bytes.in[{#SERVICE}])/max(last(//traefik.service.rps[{#SERVICE}]),1)'
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: calculated
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: b69fd5e3c3ad40f6b8d29c059702adaa
+              name: 'Traefik: requests per second on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.rps[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              description: 'Requests per second on service {#SERVICE}.'
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_requests_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      
+                      if (!Array.isArray(data) || data.length === 0) {
+                        return 0;
+                      }
+                      
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.service === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) {
+                            sum += v;
+                          }
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+            - uuid: 3b9747e9e7cf426bbdd3c6466dfe7120
+              name: 'Traefik: TLS requests per second on service {#SERVICE}'
+              type: DEPENDENT
+              key: 'traefik.service.tls.rps[{#SERVICE}]'
+              history: 7d
+              value_type: FLOAT
+              trends: 30d
+              units: req/s
+              preprocessing:
+                - type: PROMETHEUS_TO_JSON
+                  parameters:
+                    - traefik_service_requests_tls_total
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var data = JSON.parse(value);
+                      var target = '{#SERVICE}';
+                      var sum = 0;
+                      
+                      for (var i = 0; i < data.length; i++) {
+                        var labels = data[i].labels || {};
+                        if (labels.service === target) {
+                          var v = parseFloat(data[i].value);
+                          if (!isNaN(v)) sum += v;
+                        }
+                      }
+                      
+                      return sum;
+                - type: CHANGE_PER_SECOND
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: component
+                  value: traffic
+                - tag: data
+                  value: prometheus
+                - tag: service
+                  value: '{#SERVICE}'
+          master_item:
+            key: traefik.metrics.raw
+          lld_macro_paths:
+            - lld_macro: '{#SERVICE}'
+              path: '$.labels[''service'']'
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_service_requests_total
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // value = JSON from PROMETHEUS_TO_JSON
+                  var data = JSON.parse(value);
+                  var seen = {};
+                  var result = [];
+                  
+                  for (var i = 0; i < data.length; i++) {
+                    var s = data[i].labels && data[i].labels.service;
+                    if (!s) continue;
+                  
+                    // only keep first occurrence per service
+                    if (!seen[s]) {
+                      seen[s] = true;
+                      result.push(data[i]);
+                    }
+                  }
+                  
+                  return JSON.stringify(result);
+        - uuid: cac16dbf8224473ab18a2f5c52436e25
+          name: 'Traefik TLS certificates discovery'
+          type: DEPENDENT
+          key: traefik.tls.discovery
+          enabled_lifetime_type: DISABLE_AFTER
+          enabled_lifetime: 3d
+          description: 'Discovers TLS certificates from Traefik metrics.'
+          item_prototypes:
+            - uuid: ef1fdf98d7e140189ef47a726870c362
+              name: 'Traefik: TLS certificate days left for {#CN}'
+              type: DEPENDENT
+              key: 'traefik.tls.cert.days_left[{#CN},{#SERIAL}]'
+              history: 30d
+              value_type: FLOAT
+              units: d
+              description: 'Days left before TLS certificate for {#CN} expires.'
+              preprocessing:
+                - type: PROMETHEUS_PATTERN
+                  parameters:
+                    - traefik_tls_certs_not_after
+                    - value
+                    - ''
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var notAfter = parseFloat(value);   // epoch seconds
+                      var now = Date.now() / 1000;
+                      return (notAfter - now) / 86400;    // days left
+              master_item:
+                key: traefik.metrics.raw
+              tags:
+                - tag: cn
+                  value: '{#CN}'
+                - tag: component
+                  value: tls
+              trigger_prototypes:
+                - uuid: b586bb90c519480c86666a8001647153
+                  expression: 'min(/App Traefik by HTTP/traefik.tls.cert.days_left[{#CN},{#SERIAL}],1h)<{$TRAEFIK.CERT.DAYS_WARN}'
+                  name: 'Traefik: TLS certificate for {#CN} will expire soon (warning)'
+                  priority: WARNING
+                  description: 'Certificate for {#CN} is close to expiry (warning threshold).'
+                  tags:
+                    - tag: cn
+                      value: '{#CN}'
+                    - tag: scope
+                      value: security
+                - uuid: 54d2ff19820745a4b424dcc0815ca04c
+                  expression: 'min(/App Traefik by HTTP/traefik.tls.cert.days_left[{#CN},{#SERIAL}],1h)<{$TRAEFIK.CERT.DAYS_CRIT}'
+                  name: 'Traefik: TLS certificate for {#CN} will expire very soon (critical)'
+                  priority: HIGH
+                  description: 'Certificate for {#CN} is near expiry (critical threshold).'
+                  tags:
+                    - tag: cn
+                      value: '{#CN}'
+                    - tag: scope
+                      value: security
+          master_item:
+            key: traefik.metrics.raw
+          lld_macro_paths:
+            - lld_macro: '{#CN}'
+              path: '$.labels[''cn'']'
+            - lld_macro: '{#SANS}'
+              path: '$.labels[''sans'']'
+            - lld_macro: '{#SERIAL}'
+              path: '$.labels[''cn'']'
+          preprocessing:
+            - type: PROMETHEUS_TO_JSON
+              parameters:
+                - traefik_tls_certs_not_after
+      tags:
+        - tag: class
+          value: app
+        - tag: source
+          value: http-api
+        - tag: target
+          value: traefik
+      macros:
+        - macro: '{$TRAEFIK.API.HOST}'
+          value: 127.0.0.1
+          description: 'Host/IP of Traefik API/dashboard.'
+        - macro: '{$TRAEFIK.API.NODATA}'
+          value: 5m
+          description: 'Time without /api/rawdata considered a problem.'
+        - macro: '{$TRAEFIK.API.PATH}'
+          description: 'Base path for Traefik API (if proxied, e.g. /traefik). Without trailing slash.'
+        - macro: '{$TRAEFIK.API.PORT}'
+          value: '8080'
+          description: 'Port of Traefik API/dashboard.'
+        - macro: '{$TRAEFIK.API.SCHEME}'
+          value: http
+          description: 'Scheme for Traefik API (http or https).'
+        - macro: '{$TRAEFIK.CERT.DAYS_CRIT}'
+          value: '7'
+          description: 'Critical if TLS cert has less than this many days left.'
+        - macro: '{$TRAEFIK.CERT.DAYS_WARN}'
+          value: '30'
+          description: 'Warn if TLS cert has less than this many days left.'
+        - macro: '{$TRAEFIK.HTTP.TIMEOUT}'
+          value: 3s
+          description: 'Timeout for HTTP checks.'
+        - macro: '{$TRAEFIK.METRICS.HOST}'
+          value: 127.0.0.1
+          description: 'Host/IP of Traefik metrics endpoint.'
+        - macro: '{$TRAEFIK.METRICS.PATH}'
+          value: /metrics
+          description: 'Path for Prometheus metrics endpoint.'
+        - macro: '{$TRAEFIK.METRICS.PORT}'
+          value: '8080'
+          description: 'Port of Traefik metrics endpoint.'
+        - macro: '{$TRAEFIK.METRICS.SCHEME}'
+          value: http
+          description: 'Scheme for Traefik metrics endpoint.'
+        - macro: '{$TRAEFIK.PING.NODATA}'
+          value: 3m
+          description: 'Time without /ping data considered a problem.'
+        - macro: '{$TRAEFIK.SVC.ERROR.RATE.CRIT}'
+          value: '5'
+          description: 'Global 5xx error rate (req/s) critical threshold.'
+        - macro: '{$TRAEFIK.SVC.ERROR.RATE.WARN}'
+          value: '1'
+          description: 'Global 5xx error rate (req/s) warning threshold.'

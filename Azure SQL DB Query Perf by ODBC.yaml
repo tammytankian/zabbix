@@ -1,0 +1,361 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+  - uuid: 6d1b1b26b6d54f9f8c3f4a2e9d2a5f01
+    name: Templates/Databases
+  templates:
+  - uuid: 2b5a9c5f2e3d4df48bb0f7c2d9b4e111
+    template: Azure SQL DB Query Perf by ODBC
+    name: Azure SQL DB Query Perf by ODBC
+    description: 'Azure SQL Database query-performance monitoring via ODBC (DSN-only)
+      with low overhead.
+
+
+      Designed for answering: "what is slow, what is waiting, who is blocking, and
+      what regressed?"
+
+
+      Important:
+
+      - This template uses DSN only (no per-item connection string). Your DSN must
+      point to the target database (Initial Catalog/Database set in the DSN/odbc.ini).
+
+      - Platform resource metrics (CPU/IO/memory/log rate) are expected to come from
+      Azure Monitor.
+
+      - Queries are tuned for low overhead: READ UNCOMMITTED, NOCOUNT, TOP-N, short
+      Query Store windows.
+
+      '
+    groups:
+    - name: Templates/Databases
+    items:
+    - uuid: 3b1f0d4a2bfa4d11aa6a7f4b2f9b2203
+      name: 'Azure SQL: Active requests'
+      type: DEPENDENT
+      key: azsql.requests.active
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $[0].active_requests
+      master_item:
+        key: db.odbc.get[azsql_workload, "{$AZSQL.DSN}"]
+      tags:
+      - tag: component
+        value: sessions
+      - tag: type
+        value: odbc
+      description: Number of currently executing requests (from dm_exec_requests).
+    - uuid: 08f7b4d8d8ee4f64b2c5d6f0e3a32204
+      name: 'Azure SQL: Blocked requests'
+      type: DEPENDENT
+      key: azsql.requests.blocked
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $[0].blocked_requests
+      master_item:
+        key: db.odbc.get[azsql_workload, "{$AZSQL.DSN}"]
+      tags:
+      - tag: component
+        value: blocking
+      - tag: type
+        value: odbc
+      description: Number of requests currently blocked by another session (blocking_session_id
+        <> 0).
+    - uuid: d2c56c3b59394cc4a6c8d4f93a8b2202
+      name: 'Azure SQL: User sessions'
+      type: DEPENDENT
+      key: azsql.sessions.user
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $[0].user_sessions
+      master_item:
+        key: db.odbc.get[azsql_workload, "{$AZSQL.DSN}"]
+      tags:
+      - tag: component
+        value: sessions
+      - tag: type
+        value: odbc
+      description: Number of user sessions currently connected to the database (from
+        dm_exec_sessions).
+    - uuid: 2f3d3e7b2a2f4f1a9c0a8b7d8e9f2205
+      name: 'Azure SQL: Max wait time (ms)'
+      type: DEPENDENT
+      key: azsql.wait.max.ms
+      units: ms
+      preprocessing:
+      - type: JSONPATH
+        parameters:
+        - $[0].max_wait_ms
+      master_item:
+        key: db.odbc.get[azsql_workload, "{$AZSQL.DSN}"]
+      tags:
+      - tag: component
+        value: waits
+      - tag: type
+        value: odbc
+      description: Maximum wait_time (ms) among currently executing requests. Useful
+        as a quick 'is anything stuck?' indicator.
+    - uuid: 9cf8e7f789d14bb1b86b2aa43bb15301
+      name: 'Azure SQL: Active long-running requests (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_active_req_text, "{$AZSQL.DSN}"]
+      delay: 2m
+      value_type: TEXT
+      status: DISABLED
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        \n;WITH r AS (\n  SELECT TOP (CAST('{$AZSQL.ACTIVE_REQ.TOP_N}' AS int))\n\
+        \    r.session_id,\n    r.status,\n    r.blocking_session_id,\n    r.wait_type,\n\
+        \    r.wait_time,\n    r.cpu_time,\n    r.total_elapsed_time,\n    SUBSTRING(t.text,\
+        \ r.statement_start_offset/2,\n      (CASE WHEN r.statement_end_offset = -1\n\
+        \            THEN LEN(CONVERT(nvarchar(max), t.text)) * 2\n            ELSE\
+        \ r.statement_end_offset END - r.statement_start_offset)/2\n    ) AS stmt\n\
+        \  FROM sys.dm_exec_requests r\n  CROSS APPLY sys.dm_exec_sql_text(r.sql_handle)\
+        \ t\n  WHERE r.session_id > 50\n    AND r.total_elapsed_time >= (CAST('{$AZSQL.ACTIVE_REQ.MIN_ELAPSED_S}'\
+        \ AS int) * 1000)\n  ORDER BY r.total_elapsed_time DESC\n)\nSELECT COALESCE(STRING_AGG(\n\
+        \  CONCAT('sid=',session_id,' el_ms=',total_elapsed_time,' cpu_ms=',cpu_time,'\
+        \ wait=',COALESCE(wait_type,''),' blk=',blocking_session_id,' sql=',REPLACE(REPLACE(LEFT(stmt,200),\
+        \ CHAR(13),' '), CHAR(10),' ')),\n  ' || '\n), 'no long-running requests')\
+        \ AS active_long_running\nFROM r\nOPTION (MAXDOP 1, RECOMPILE);\n"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      preprocessing:
+      - type: CHECK_NOT_SUPPORTED
+        parameters:
+        - '-1'
+        error_handler: CUSTOM_VALUE
+      timeout: '{$AZSQL.TIMEOUT}'
+      tags:
+      - tag: component
+        value: sessions
+      - tag: type
+        value: odbc
+      description: Text summary of currently running requests over the configured
+        elapsed time threshold. Includes session id, wait type, blocker id, and a
+        SQL snippet.
+    - uuid: 4cb99259f6b2425c8c37c4f64fb15401
+      name: 'Azure SQL: Query Store top queries by CPU (last window) (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_qs_top_cpu_text, "{$AZSQL.DSN}"]
+      delay: 10m
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        \nDECLARE @start_time datetimeoffset = DATEADD(minute, -CAST('{$AZSQL.QS.WINDOW_MIN}'\
+        \ AS int), SYSUTCDATETIME());\n\n;WITH topq AS (\n  SELECT TOP (CAST('{$AZSQL.QS.TOP_N}'\
+        \ AS int))\n    q.query_id,\n    SUM(rs.count_executions) AS execs,\n    SUM(rs.avg_cpu_time\
+        \ * rs.count_executions) AS total_cpu_us,\n    SUM(rs.avg_duration * rs.count_executions)\
+        \ AS total_dur_us\n  FROM sys.query_store_runtime_stats rs\n  JOIN sys.query_store_plan\
+        \ p ON rs.plan_id = p.plan_id\n  JOIN sys.query_store_query q ON p.query_id\
+        \ = q.query_id\n  JOIN sys.query_store_runtime_stats_interval i ON rs.runtime_stats_interval_id\
+        \ = i.runtime_stats_interval_id\n  WHERE i.start_time >= @start_time\n  GROUP\
+        \ BY q.query_id\n  ORDER BY total_cpu_us DESC\n)\nSELECT COALESCE(STRING_AGG(\n\
+        \  CONCAT('QID=',query_id,' execs=',execs,' cpu_ms=',CAST(total_cpu_us/1000.0\
+        \ AS decimal(18,1)),' dur_ms=',CAST(total_dur_us/1000.0 AS decimal(18,1))),\n\
+        \  ' | '\n), 'no Query Store data in window') AS qs_top_cpu\nFROM topq\nOPTION\
+        \ (MAXDOP 1, RECOMPILE);\n"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      tags:
+      - tag: component
+        value: querystore
+      - tag: type
+        value: odbc
+      history: 7d
+      description: 'Query Store: top query_id by total CPU time in the last window
+        (minutes). Good for identifying CPU-heavy query patterns recently.'
+    - uuid: 6f6418aee72a4d23a68aee3a43b15402
+      name: 'Azure SQL: Query Store top queries by duration (last window) (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_qs_top_dur_text, "{$AZSQL.DSN}"]
+      delay: 10m
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        \nDECLARE @start_time datetimeoffset = DATEADD(minute, -CAST('{$AZSQL.QS.WINDOW_MIN}'\
+        \ AS int), SYSUTCDATETIME());\n\n;WITH topq AS (\n  SELECT TOP (CAST('{$AZSQL.QS.TOP_N}'\
+        \ AS int))\n    q.query_id,\n    SUM(rs.count_executions) AS execs,\n    SUM(rs.avg_duration\
+        \ * rs.count_executions) AS total_dur_us,\n    SUM(rs.avg_cpu_time * rs.count_executions)\
+        \ AS total_cpu_us\n  FROM sys.query_store_runtime_stats rs\n  JOIN sys.query_store_plan\
+        \ p ON rs.plan_id = p.plan_id\n  JOIN sys.query_store_query q ON p.query_id\
+        \ = q.query_id\n  JOIN sys.query_store_runtime_stats_interval i ON rs.runtime_stats_interval_id\
+        \ = i.runtime_stats_interval_id\n  WHERE i.start_time >= @start_time\n  GROUP\
+        \ BY q.query_id\n  ORDER BY total_dur_us DESC\n)\nSELECT COALESCE(STRING_AGG(\n\
+        \  CONCAT('QID=',query_id,' execs=',execs,' dur_ms=',CAST(total_dur_us/1000.0\
+        \ AS decimal(18,1)),' cpu_ms=',CAST(total_cpu_us/1000.0 AS decimal(18,1))),\n\
+        \  ' | '\n), 'no Query Store data in window') AS qs_top_dur\nFROM topq\nOPTION\
+        \ (MAXDOP 1, RECOMPILE);\n"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      tags:
+      - tag: component
+        value: querystore
+      - tag: type
+        value: odbc
+      history: 7d
+      description: 'Query Store: top query_id by total duration in the last window
+        (minutes). Good for identifying slow queries recently (even if CPU is low).'
+    - uuid: 1c29f6b1a4a8452a94f7bde35d7f4001
+      name: 'Azure SQL: Top waits snapshot (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_waits_text, "{$AZSQL.DSN}"]
+      delay: 10m
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        ;WITH w AS (\n  SELECT TOP (CAST('{$AZSQL.WAITS.TOP_N}' AS int))\n    wait_type,\n\
+        \    waiting_tasks_count,\n    wait_time_ms\n  FROM sys.dm_db_wait_stats\n\
+        \  WHERE wait_type NOT LIKE 'SLEEP%%'\n    AND wait_type NOT LIKE 'BROKER%%'\n\
+        \  ORDER BY wait_time_ms DESC\n)\nSELECT COALESCE(STRING_AGG(\n  CONCAT(wait_type,':\
+        \ tasks=',waiting_tasks_count,' wait_ms=',wait_time_ms),\n  ' | '\n), 'no\
+        \ waits data') AS waits_top\nFROM w\nOPTION (MAXDOP 1, RECOMPILE);"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      tags:
+      - tag: component
+        value: waits
+      - tag: type
+        value: odbc
+      description: Top wait types by cumulative wait_time_ms (database-scoped). Helps
+        identify the dominant bottleneck class (IO, locking, CPU, network, etc.).
+    - uuid: 4f0c2c8e7c4d41a2b9b1f5b612a1a201
+      name: 'Azure SQL: Workload counters (raw)'
+      type: ODBC
+      key: db.odbc.get[azsql_workload, "{$AZSQL.DSN}"]
+      history: '0'
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        SELECT\n  (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process\
+        \ = 1) AS user_sessions,\n  (SELECT COUNT(*) FROM sys.dm_exec_requests WHERE\
+        \ session_id > 50) AS active_requests,\n  (SELECT COUNT(*) FROM sys.dm_exec_requests\
+        \ WHERE blocking_session_id <> 0) AS blocked_requests,\n  (SELECT ISNULL(MAX(wait_time),0)\
+        \ FROM sys.dm_exec_requests) AS max_wait_ms\nOPTION (MAXDOP 1);"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      tags:
+      - tag: component
+        value: raw
+      - tag: type
+        value: odbc
+      description: Master item. Lightweight snapshot of sessions/active requests/blocked
+        requests/max wait. Dependent items extract each number via JSONPath.
+    - uuid: 04996640b51541f490b8a189ee454892
+      name: 'Azure SQL: Blocking tree (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_blocking_text, "{$AZSQL.DSN}"]
+      history: 7d
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        ;WITH b AS (\n  SELECT TOP 20\n    r.session_id,\n    r.blocking_session_id,\n\
+        \    r.status,\n    r.wait_type,\n    r.wait_time,\n    r.total_elapsed_time,\n\
+        \    SUBSTRING(t.text, r.statement_start_offset/2,\n      (CASE WHEN r.statement_end_offset\
+        \ = -1\n            THEN LEN(CONVERT(nvarchar(max), t.text)) * 2\n       \
+        \     ELSE r.statement_end_offset END - r.statement_start_offset)/2\n    )\
+        \ AS stmt\n  FROM sys.dm_exec_requests r\n  CROSS APPLY sys.dm_exec_sql_text(r.sql_handle)\
+        \ t\n  WHERE r.blocking_session_id <> 0\n  ORDER BY r.wait_time DESC\n)\n\
+        SELECT COALESCE(STRING_AGG(\n  CONCAT('sid=',session_id,' blocked_by=',blocking_session_id,'\
+        \ wait=',COALESCE(wait_type,''),' wait_ms=',wait_time,' el_ms=',total_elapsed_time,'\
+        \ sql=',REPLACE(REPLACE(LEFT(stmt,200), CHAR(13),' '), CHAR(10),' ')),\n \
+        \ ' || '\n), 'no blocking') AS blocking_tree\nFROM b\nOPTION (MAXDOP 1, RECOMPILE);"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      delay: 1m
+      tags:
+      - tag: component
+        value: blocking
+      - tag: type
+        value: odbc
+      description: Text summary of currently blocked requests and their blockers,
+        including wait type and a SQL snippet. Fast way to confirm blocking incidents.
+    - uuid: d6ddc639046649fdb6ec0c827c507d45
+      name: 'Azure SQL: TempDB top sessions (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_tempdb_text, "{$AZSQL.DSN}"]
+      history: 7d
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        ;WITH s AS (\n  SELECT TOP 10\n    session_id,\n    user_objects_alloc_page_count,\n\
+        \    internal_objects_alloc_page_count,\n    user_objects_dealloc_page_count,\n\
+        \    internal_objects_dealloc_page_count\n  FROM sys.dm_db_session_space_usage\n\
+        \  ORDER BY internal_objects_alloc_page_count DESC\n)\nSELECT COALESCE(STRING_AGG(\n\
+        \  CONCAT('sid=',session_id,\n         ' int_alloc_pg=',internal_objects_alloc_page_count,\n\
+        \         ' usr_alloc_pg=',user_objects_alloc_page_count),\n  ' | '\n), 'no\
+        \ tempdb data') AS tempdb_top_sessions\nFROM s\nOPTION (MAXDOP 1, RECOMPILE);"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      delay: 5m
+      tags:
+      - tag: component
+        value: tempdb
+      - tag: type
+        value: odbc
+      description: Top sessions by TempDB internal object page allocations. High values
+        often indicate spills (hash/sort) or large temp worktables.
+    - uuid: 4d39e1a817a040d8a2efff7da3340825
+      name: 'Azure SQL: Query Store regressions (avg duration) (text)'
+      type: ODBC
+      key: db.odbc.get[azsql_qs_regress_text, "{$AZSQL.DSN}"]
+      history: 7d
+      value_type: TEXT
+      params: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSET NOCOUNT ON;\n\
+        DECLARE @w int = CAST('{$AZSQL.QS.REGRESS_WINDOW_H}' AS int);\nDECLARE @t1\
+        \ datetimeoffset = DATEADD(hour, -@w, SYSUTCDATETIME());\nDECLARE @t0 datetimeoffset\
+        \ = DATEADD(hour, -(@w*2), SYSUTCDATETIME());\n\n;WITH lastw AS (\n  SELECT\
+        \ q.query_id,\n         SUM(rs.avg_duration * rs.count_executions) / NULLIF(SUM(rs.count_executions),0)\
+        \ AS avg_dur_us,\n         SUM(rs.count_executions) AS execs\n  FROM sys.query_store_runtime_stats\
+        \ rs\n  JOIN sys.query_store_plan p ON rs.plan_id=p.plan_id\n  JOIN sys.query_store_query\
+        \ q ON p.query_id=q.query_id\n  JOIN sys.query_store_runtime_stats_interval\
+        \ i ON i.runtime_stats_interval_id=rs.runtime_stats_interval_id\n  WHERE i.start_time\
+        \ >= @t1\n  GROUP BY q.query_id\n),\nprevw AS (\n  SELECT q.query_id,\n  \
+        \       SUM(rs.avg_duration * rs.count_executions) / NULLIF(SUM(rs.count_executions),0)\
+        \ AS avg_dur_us\n  FROM sys.query_store_runtime_stats rs\n  JOIN sys.query_store_plan\
+        \ p ON rs.plan_id=p.plan_id\n  JOIN sys.query_store_query q ON p.query_id=q.query_id\n\
+        \  JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id=rs.runtime_stats_interval_id\n\
+        \  WHERE i.start_time >= @t0 AND i.start_time < @t1\n  GROUP BY q.query_id\n\
+        ),\nd AS (\n  SELECT TOP 10\n    l.query_id,\n    l.execs,\n    l.avg_dur_us\
+        \ AS avg_last_us,\n    p.avg_dur_us AS avg_prev_us,\n    (l.avg_dur_us / NULLIF(p.avg_dur_us,0))\
+        \ AS regression_x\n  FROM lastw l\n  JOIN prevw p ON p.query_id=l.query_id\n\
+        \  WHERE l.execs >= 5\n  ORDER BY regression_x DESC\n)\nSELECT COALESCE(STRING_AGG(\n\
+        \  CONCAT('QID=',query_id,' execs=',execs,\n         ' avg_last_ms=',CAST(avg_last_us/1000.0\
+        \ AS decimal(18,1)),\n         ' avg_prev_ms=',CAST(avg_prev_us/1000.0 AS\
+        \ decimal(18,1)),\n         ' x=',CAST(regression_x AS decimal(18,2))),\n\
+        \  ' | '\n), 'no regressions detected') AS qs_regressions\nFROM d\nOPTION\
+        \ (MAXDOP 1, RECOMPILE);"
+      username: '{$AZSQL.USER}'
+      password: '{$AZSQL.PASSWORD}'
+      timeout: '{$AZSQL.TIMEOUT}'
+      delay: 30m
+      tags:
+      - tag: component
+        value: query_store
+      - tag: type
+        value: odbc
+      description: 'Query Store: compares avg duration over the last N hours vs the
+        previous N hours; returns top regressions (largest multiplier).'
+    discovery_rules: []
+    macros:
+    - macro: '{$AZSQL.ACTIVE_REQ.MIN_ELAPSED_S}'
+      value: '30'
+    - macro: '{$AZSQL.ACTIVE_REQ.TOP_N}'
+      value: '10'
+    - macro: '{$AZSQL.DSN}'
+      value: AzureSQL-ServerDSN
+    - macro: '{$AZSQL.PASSWORD}'
+      value: change_me
+    - macro: '{$AZSQL.QS.TOP_N}'
+      value: '5'
+    - macro: '{$AZSQL.QS.WINDOW_MIN}'
+      value: '30'
+    - macro: '{$AZSQL.TIMEOUT}'
+      value: 5s
+    - macro: '{$AZSQL.USER}'
+      value: zbx_monitor
+    - macro: '{$AZSQL.WAITS.TOP_N}'
+      value: '8'
+    - macro: '{$AZSQL.QS.REGRESS_WINDOW_H}'
+      value: '24'

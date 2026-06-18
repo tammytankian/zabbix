@@ -1,0 +1,317 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 8a2f7088ec2d44a69b8f7fa0bc54c7f1
+      name: Templates/Applications
+  templates:
+    - uuid: 4b0fbd1d03754ec88440d713c2050c69
+      template: 'Template GitHub Actions by HTTP'
+      name: 'Template GitHub Actions by HTTP'
+      description: |
+        Monitors selected GitHub Actions workflows for a single repository.
+        
+        Expected host macros:
+        {$GITHUB_OWNER}          GitHub organization/user name
+        {$GITHUB_REPO}           Repository name
+        {$GITHUB_TOKEN}          GitHub fine-grained PAT or app token with Actions: read
+        {$GITHUB_WORKFLOW_IDS}   Comma-separated workflow IDs to monitor
+        {$GITHUB_MAX_DURATION}   Maximum allowed runtime in seconds
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: a3d3fca3858842379a5b9b70efad2528
+          name: 'GitHub Actions: workflow runs raw'
+          type: HTTP_AGENT
+          key: github.actions.runs.raw
+          history: 7d
+          value_type: TEXT
+          description: 'Fetches the latest GitHub Actions workflow runs for this repository and keeps only allowed workflow IDs.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var data = JSON.parse(value);
+                  var simplified = [];
+                  
+                  var wantedRaw = '{$GITHUB_WORKFLOW_IDS}';
+                  var wantedIds = wantedRaw.split(',');
+                  
+                  for (var i = 0; i < wantedIds.length; i++) {
+                      wantedIds[i] = wantedIds[i].trim();
+                  }
+                  
+                  for (var j = 0; j < data.workflow_runs.length; j++) {
+                      var run = data.workflow_runs[j];
+                  
+                      if (wantedIds.indexOf(String(run.workflow_id)) === -1) {
+                          continue;
+                      }
+                  
+                      var duration = 0;
+                  
+                      if (run.run_started_at && run.updated_at) {
+                          duration = Math.floor((Date.parse(run.updated_at) - Date.parse(run.run_started_at)) / 1000);
+                      }
+                  
+                      simplified.push({
+                          'id': run.id,
+                          'workflow_id': run.workflow_id,
+                          'name': run.name,
+                          'status': run.status,
+                          'conclusion': run.conclusion,
+                          'branch': run.head_branch,
+                          'actor': run.actor ? run.actor.login : '',
+                          'event': run.event,
+                          'duration': duration,
+                          'run_started_at': run.run_started_at,
+                          'updated_at': run.updated_at,
+                          'html_url': run.html_url
+                      });
+                  }
+                  
+                  return JSON.stringify(simplified);
+          timeout: 10s
+          url: 'https://api.github.com/repos/{$GITHUB_OWNER}/{$GITHUB_REPO}/actions/runs'
+          query_fields:
+            - name: per_page
+              value: '100'
+          headers:
+            - name: Authorization
+              value: 'Bearer {$GITHUB_TOKEN}'
+            - name: Accept
+              value: application/vnd.github+json
+            - name: X-GitHub-Api-Version
+              value: '2022-11-28'
+            - name: User-Agent
+              value: zabbix-github-actions-monitor
+          tags:
+            - tag: application
+              value: github
+            - tag: type
+              value: raw
+      discovery_rules:
+        - uuid: c38816f6d3794ff5b8ae13db6369332b
+          name: 'GitHub Actions workflows discovery'
+          type: DEPENDENT
+          key: github.actions.workflows.discovery
+          description: 'Discovers each selected workflow once from the filtered master item.'
+          item_prototypes:
+            - uuid: bd08be9b0a104a96bb00cbb7016e1fe3
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: actor'
+              type: DEPENDENT
+              key: 'github.actions.actor[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].actor.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: 729618181cbd44f1a9f3852f06d01f8b
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: branch'
+              type: DEPENDENT
+              key: 'github.actions.branch[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].branch.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: 0c2172f4e78342f88d72890d52c04941
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: conclusion'
+              type: DEPENDENT
+              key: 'github.actions.conclusion[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].conclusion.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+              trigger_prototypes:
+                - uuid: f668d86762794bc5ab3f5719bf552522
+                  expression: 'last(/Template GitHub Actions by HTTP/github.actions.conclusion[{#WORKFLOW_ID}])="timed_out" or last(/Template GitHub Actions by HTTP/github.actions.conclusion[{#WORKFLOW_ID}])="cancelled" or last(/Template GitHub Actions by HTTP/github.actions.conclusion[{#WORKFLOW_ID}])="action_required"'
+                  name: 'GitHub Action [{#WORKFLOW_NAME}] ended abnormally'
+                  priority: AVERAGE
+                  description: 'The latest selected workflow run ended as timed_out, cancelled, or action_required.'
+                - uuid: 833ab98d95264e8ca3b9f7898a0877a0
+                  expression: 'last(/Template GitHub Actions by HTTP/github.actions.conclusion[{#WORKFLOW_ID}])="failure"'
+                  name: 'GitHub Action [{#WORKFLOW_NAME}] failed'
+                  priority: HIGH
+                  description: 'The latest selected workflow run ended with conclusion=failure.'
+            - uuid: ddf5cfd9fac746a4af5e72a3da4b9d2b
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: duration'
+              type: DEPENDENT
+              key: 'github.actions.duration[{#WORKFLOW_ID}]'
+              history: 30d
+              trends: 90d
+              units: s
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].duration.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: c356be0dfe1e4a0499259029b44f792c
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: event'
+              type: DEPENDENT
+              key: 'github.actions.event[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].event.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: 7ac90b05418f4ab8a9a8ee31dfb54ca1
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: run started at'
+              type: DEPENDENT
+              key: 'github.actions.run_started_at[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].run_started_at.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: 7da8a4c75a064e35b2842d8b03ee8393
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: status'
+              type: DEPENDENT
+              key: 'github.actions.status[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].status.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: e8543409c634445e89a2cfeec80cb6c6
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: updated at'
+              type: DEPENDENT
+              key: 'github.actions.updated_at[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: CHAR
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].updated_at.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+            - uuid: 66b6f3f6e5f14370a1bdc0eb2c87b0db
+              name: 'GitHub Action [{#WORKFLOW_NAME}]: url'
+              type: DEPENDENT
+              key: 'github.actions.url[{#WORKFLOW_ID}]'
+              history: 30d
+              value_type: TEXT
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.workflow_id == {#WORKFLOW_ID})].html_url.first()'
+              master_item:
+                key: github.actions.runs.raw
+              tags:
+                - tag: application
+                  value: github
+                - tag: workflow
+                  value: '{#WORKFLOW_NAME}'
+          trigger_prototypes:
+            - uuid: 2d220de1949e41668c445506962a7f9d
+              expression: 'last(/Template GitHub Actions by HTTP/github.actions.status[{#WORKFLOW_ID}])="in_progress" and last(/Template GitHub Actions by HTTP/github.actions.duration[{#WORKFLOW_ID}])>{$GITHUB_MAX_DURATION}'
+              name: 'GitHub Action [{#WORKFLOW_NAME}] running too long'
+              priority: WARNING
+              description: 'The workflow is still in progress and its calculated duration is greater than {$GITHUB_MAX_DURATION} seconds.'
+          master_item:
+            key: github.actions.runs.raw
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var runs = JSON.parse(value);
+                  var seen = {};
+                  var data = [];
+                  
+                  for (var i = 0; i < runs.length; i++) {
+                      var run = runs[i];
+                      var id = String(run.workflow_id);
+                  
+                      if (seen[id]) {
+                          continue;
+                      }
+                  
+                      seen[id] = true;
+                  
+                      data.push({
+                          '{#WORKFLOW_ID}': id,
+                          '{#WORKFLOW_NAME}': run.name
+                      });
+                  }
+                  
+                  return JSON.stringify({'data': data});
+      tags:
+        - tag: application
+          value: github
+        - tag: repo
+          value: '{$GITHUB_REPO}'
+      macros:
+        - macro: '{$GITHUB_MAX_DURATION}'
+          value: '1800'
+          description: 'Maximum workflow runtime in seconds before alerting while status is in_progress.'
+        - macro: '{$GITHUB_OWNER}'
+          value: CHANGE_ME_OWNER
+          description: 'GitHub organization or user that owns the repository.'
+        - macro: '{$GITHUB_REPO}'
+          value: CHANGE_ME_REPO
+          description: 'GitHub repository name.'
+        - macro: '{$GITHUB_TOKEN}'
+          type: SECRET_TEXT
+          description: 'GitHub token. Requires repository Actions: read permission.'
+        - macro: '{$GITHUB_WORKFLOW_IDS}'
+          value: CHANGE_ME_WORKFLOW_IDS
+          description: 'Comma-separated GitHub workflow IDs to include, for example: 123456789,987654321'

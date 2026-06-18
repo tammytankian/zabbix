@@ -1,0 +1,548 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 9c2e1f69123644a5be8ea034ae4b104c
+      name: Templates/Containers
+  templates:
+    - uuid: fd00a503216147cb99be4e3b8a79cf86
+      template: Docker_Compose_by_Zabbix_agent2
+      name: 'Docker Compose by Zabbix agent 2'
+      description: |
+        Compose overlay template (Zabbix 7.4+).
+        
+        Depends on the official template "Docker by Zabbix agent 2" for the master item:
+          - docker.containers (Agent2 Docker plugin ContainerList JSON)
+        
+        Adds Compose awareness:
+          - Project discovery (com.docker.compose.project)
+          - Service discovery (project+service)
+          - Rollup state counts per project/service: total, running, unhealthy, exited, restarting, paused, dead
+          - Published TCP port discovery + local port listening checks (net.tcp.listen[])
+      vendor:
+        name: Custom
+        version: 7.4-3
+      templates:
+        - name: 'Docker by Zabbix agent 2'
+      groups:
+        - name: Templates/Containers
+      discovery_rules:
+        - uuid: c992b2d489a74d65b7557016381e2d90
+          name: 'Compose: Published TCP ports discovery'
+          type: DEPENDENT
+          key: docker.compose.ports.discovery
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#PUBPORT}'
+                value: '{$COMPOSE.LLD.PORT.MATCHES}'
+              - macro: '{#PUBPORT}'
+                value: '{$COMPOSE.LLD.PORT.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+          lifetime: 30d
+          item_prototypes:
+            - uuid: 8a169da18def4a77ba32add1fc3b0778
+              name: 'Service {#PROJECT}/{#SERVICE}: TCP port {#PUBPORT} listening (local)'
+              key: 'net.tcp.listen[{#PUBPORT}]'
+              description: '1 if the Docker host is listening on this TCP port, 0 otherwise.'
+              trigger_prototypes:
+                - uuid: 4abf5b53ee3140589304a44d58159024
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/net.tcp.listen[{#PUBPORT}]) = 0'
+                  name: 'Service {#PROJECT}/{#SERVICE}: TCP port {#PUBPORT} not listening'
+                  priority: WARNING
+          master_item: {  }
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var arr;
+                  try { arr = JSON.parse(value); } catch (e) { return JSON.stringify({data:[]}); }
+                  if (!Array.isArray(arr)) return JSON.stringify({data:[]});
+                  
+                  var seen = {};
+                  var out = [];
+                  for (var i=0; i<arr.length; i++) {
+                    var c = arr[i] || {};
+                    var labels = c.Labels || {};
+                    var p = labels["com.docker.compose.project"];
+                    var s = labels["com.docker.compose.service"];
+                    var o = labels["com.docker.compose.oneoff"] || "";
+                    if (!p || !s) continue;
+                    if ((o || "") === "True") continue;
+                  
+                    var ports = c.Ports || [];
+                    for (var j=0; j<ports.length; j++) {
+                      var prt = ports[j] || {};
+                      if (!prt.PublicPort) continue;
+                      if ((prt.Type || "").toLowerCase() !== "tcp") continue;
+                  
+                      var pub = String(prt.PublicPort);
+                      var k = p + ":" + s + ":" + pub;
+                      if (seen[k]) continue;
+                      seen[k] = 1;
+                  
+                      out.push({
+                        "{#PROJECT}": p,
+                        "{#SERVICE}": s,
+                        "{#PUBPORT}": pub
+                      });
+                    }
+                  }
+                  
+                  return JSON.stringify({data: out});
+        - uuid: f9eb81da7f9f4592beab05dcc33d9689
+          name: 'Compose: Project discovery'
+          type: DEPENDENT
+          key: docker.compose.project.discovery
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#PROJECT}'
+                value: '{$COMPOSE.LLD.PROJECT.MATCHES}'
+              - macro: '{#PROJECT}'
+                value: '{$COMPOSE.LLD.PROJECT.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+          lifetime: 30d
+          item_prototypes:
+            - uuid: d9ea02292d364ebaabd147d0830753e6
+              name: 'Project {#PROJECT}: Dead'
+              type: DEPENDENT
+              key: 'docker.compose.project.dead["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p) continue;
+                        if ((c.State || "") === "dead") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: df8f4d6d876642f6a921ef987fc578a6
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.dead["{#PROJECT}"]) > 0'
+                  name: 'Project {#PROJECT}: Dead containers detected'
+                  priority: HIGH
+            - uuid: 0a0b7a1cbb914b948644148aedc07ab7
+              name: 'Project {#PROJECT}: Exited'
+              type: DEPENDENT
+              key: 'docker.compose.project.exited["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p) continue;
+                        if ((c.State || "") === "exited") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: 0aa0e285e64d4891a2f6313c123f842b
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.exited["{#PROJECT}"]) > 0'
+                  name: 'Project {#PROJECT}: Exited containers detected'
+                  priority: WARNING
+            - uuid: 26c4f94591cb429fb434300a542c7b2f
+              name: 'Project {#PROJECT}: Paused'
+              type: DEPENDENT
+              key: 'docker.compose.project.paused["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p) continue;
+                        if ((c.State || "") === "paused") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: 982b3d6c8cb3447ea3672a77f1d5b9ad
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.paused["{#PROJECT}"]) > 0'
+                  name: 'Project {#PROJECT}: Paused containers detected'
+                  priority: WARNING
+            - uuid: b4ba3d67a51644779d46bf481caaab3c
+              name: 'Project {#PROJECT}: Restarting'
+              type: DEPENDENT
+              key: 'docker.compose.project.restarting["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p) continue;
+                        if ((c.State || "") === "restarting") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: 2866b6cb17454bb99db3e34275e4b171
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.restarting["{#PROJECT}"]) > 0'
+                  name: 'Project {#PROJECT}: Restarting containers detected'
+                  priority: WARNING
+            - uuid: 1897d017a2434f188d47827f3c18f442
+              name: 'Project {#PROJECT}: Running'
+              type: DEPENDENT
+              key: 'docker.compose.project.running["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p) continue;
+                        if ((c.State || "") === "running") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+            - uuid: fe524ea6b0d04362b86f7fbbebf6ed33
+              name: 'Project {#PROJECT}: Total'
+              type: DEPENDENT
+              key: 'docker.compose.project.total["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] === p) n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+            - uuid: ed93e931756843199405dfe50618ca4d
+              name: 'Project {#PROJECT}: Unhealthy'
+              type: DEPENDENT
+              key: 'docker.compose.project.unhealthy["{#PROJECT}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p) continue;
+                        var st = (c.Status || "").toLowerCase();
+                        if (st.indexOf("unhealthy") !== -1) n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: a1607a1e9cd74044b75755c49037458f
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.unhealthy["{#PROJECT}"]) > 0'
+                  name: 'Project {#PROJECT}: Unhealthy containers detected'
+                  priority: AVERAGE
+          trigger_prototypes:
+            - uuid: 0401dd0e89c146a2ab5bfb26939c312a
+              expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.running["{#PROJECT}"]) < last(/Docker_Compose_by_Zabbix_agent2/docker.compose.project.total["{#PROJECT}"])'
+              name: 'Project {#PROJECT}: Some containers are not running'
+              priority: HIGH
+          master_item: {  }
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var arr;
+                  try { arr = JSON.parse(value); } catch (e) { return JSON.stringify({data:[]}); }
+                  if (!Array.isArray(arr)) return JSON.stringify({data:[]});
+                  
+                  var map = {};
+                  for (var i=0; i<arr.length; i++) {
+                    var c = arr[i] || {};
+                    var labels = c.Labels || {};
+                    var p = labels["com.docker.compose.project"];
+                    if (!p) continue;
+                    if (!map[p]) map[p] = {"{#PROJECT}": p};
+                  }
+                  
+                  var out = [];
+                  for (var k in map) out.push(map[k]);
+                  return JSON.stringify({data: out});
+        - uuid: 8894748c5ba8445490a4accc8f73d072
+          name: 'Compose: Service discovery'
+          type: DEPENDENT
+          key: docker.compose.service.discovery
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#ONEOFF}'
+                value: '{$COMPOSE.LLD.ONEOFF.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+              - macro: '{#PROJECT}'
+                value: '{$COMPOSE.LLD.PROJECT.MATCHES}'
+              - macro: '{#PROJECT}'
+                value: '{$COMPOSE.LLD.PROJECT.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+              - macro: '{#SERVICE}'
+                value: '{$COMPOSE.LLD.SERVICE.MATCHES}'
+              - macro: '{#SERVICE}'
+                value: '{$COMPOSE.LLD.SERVICE.NOT_MATCHES}'
+                operator: NOT_MATCHES_REGEX
+          lifetime: 30d
+          item_prototypes:
+            - uuid: 2a2c0c64b8414b699d0b9bc495530a71
+              name: 'Service {#PROJECT}/{#SERVICE}: Dead'
+              type: DEPENDENT
+              key: 'docker.compose.service.dead["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p ||
+                            labels["com.docker.compose.service"] !== s) continue;
+                        if ((c.State || "") === "dead") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: faf1c23be59a4d9a8ff250ef34dee8ef
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.dead["{#PROJECT}","{#SERVICE}"]) > 0'
+                  name: 'Service {#PROJECT}/{#SERVICE}: Dead containers detected'
+                  priority: HIGH
+            - uuid: 63e2e08e6a1b4b8c8532d47e325647be
+              name: 'Service {#PROJECT}/{#SERVICE}: Exited'
+              type: DEPENDENT
+              key: 'docker.compose.service.exited["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p ||
+                            labels["com.docker.compose.service"] !== s) continue;
+                        if ((c.State || "") === "exited") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: 9064f4b9bb2643268554dcccf4eb00a1
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.exited["{#PROJECT}","{#SERVICE}"]) > 0'
+                  name: 'Service {#PROJECT}/{#SERVICE}: Exited containers detected'
+                  priority: WARNING
+            - uuid: 01155cb8f7764ed599a65a5add374e40
+              name: 'Service {#PROJECT}/{#SERVICE}: Paused'
+              type: DEPENDENT
+              key: 'docker.compose.service.paused["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p ||
+                            labels["com.docker.compose.service"] !== s) continue;
+                        if ((c.State || "") === "paused") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: 7dbe2c03961b40a5ad29eb2162e19d8c
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.paused["{#PROJECT}","{#SERVICE}"]) > 0'
+                  name: 'Service {#PROJECT}/{#SERVICE}: Paused containers detected'
+                  priority: WARNING
+            - uuid: 3426115ea1b94883a9168f7fcb9f1e7d
+              name: 'Service {#PROJECT}/{#SERVICE}: Restarting'
+              type: DEPENDENT
+              key: 'docker.compose.service.restarting["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p ||
+                            labels["com.docker.compose.service"] !== s) continue;
+                        if ((c.State || "") === "restarting") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: 8340d7c5b3b0435eb9de1b2e2fa4db7e
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.restarting["{#PROJECT}","{#SERVICE}"]) > 0'
+                  name: 'Service {#PROJECT}/{#SERVICE}: Restarting containers detected'
+                  priority: WARNING
+            - uuid: 8fa81282c8f248cbbe0ff3580ab2ab44
+              name: 'Service {#PROJECT}/{#SERVICE}: Running'
+              type: DEPENDENT
+              key: 'docker.compose.service.running["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p ||
+                            labels["com.docker.compose.service"] !== s) continue;
+                        if ((c.State || "") === "running") n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+            - uuid: 031ef7d871244fdcbe0de8547a222651
+              name: 'Service {#PROJECT}/{#SERVICE}: Total'
+              type: DEPENDENT
+              key: 'docker.compose.service.total["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] === p &&
+                            labels["com.docker.compose.service"] === s) n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+            - uuid: 1d3f7568b70e418187fad8b0e516a9a9
+              name: 'Service {#PROJECT}/{#SERVICE}: Unhealthy'
+              type: DEPENDENT
+              key: 'docker.compose.service.unhealthy["{#PROJECT}","{#SERVICE}"]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      var arr;
+                      try { arr = JSON.parse(value); } catch (e) { return 0; }
+                      if (!Array.isArray(arr)) return 0;
+                      var p = "{#PROJECT}", s = "{#SERVICE}", n = 0;
+                      for (var i=0; i<arr.length; i++) {
+                        var c = arr[i] || {};
+                        var labels = c.Labels || {};
+                        if (labels["com.docker.compose.project"] !== p ||
+                            labels["com.docker.compose.service"] !== s) continue;
+                        var st = (c.Status || "").toLowerCase();
+                        if (st.indexOf("unhealthy") !== -1) n++;
+                      }
+                      return n;
+              master_item:
+                key: docker.containers
+              trigger_prototypes:
+                - uuid: bf276bad0cdc4a3f821f76ec66e613e6
+                  expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.unhealthy["{#PROJECT}","{#SERVICE}"]) > 0'
+                  name: 'Service {#PROJECT}/{#SERVICE}: Unhealthy containers detected'
+                  priority: AVERAGE
+          trigger_prototypes:
+            - uuid: 4a17508e507a4dfb8c1cbf49e3ccdfdc
+              expression: 'last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.running["{#PROJECT}","{#SERVICE}"]) < last(/Docker_Compose_by_Zabbix_agent2/docker.compose.service.total["{#PROJECT}","{#SERVICE}"])'
+              name: 'Service {#PROJECT}/{#SERVICE}: Some containers are not running'
+              priority: HIGH
+          master_item: {  }
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var arr;
+                  try { arr = JSON.parse(value); } catch (e) { return JSON.stringify({data:[]}); }
+                  if (!Array.isArray(arr)) return JSON.stringify({data:[]});
+                  
+                  var map = {};
+                  for (var i=0; i<arr.length; i++) {
+                    var c = arr[i] || {};
+                    var labels = c.Labels || {};
+                    var p = labels["com.docker.compose.project"];
+                    var s = labels["com.docker.compose.service"];
+                    var o = labels["com.docker.compose.oneoff"] || "";
+                    if (!p || !s) continue;
+                    var k = p + ":" + s;
+                    if (!map[k]) map[k] = {"{#PROJECT}": p, "{#SERVICE}": s, "{#ONEOFF}": o};
+                  }
+                  
+                  var out = [];
+                  for (var k2 in map) out.push(map[k2]);
+                  return JSON.stringify({data: out});
+      macros:
+        - macro: '{$COMPOSE.LLD.ONEOFF.NOT_MATCHES}'
+          value: ^True$
+        - macro: '{$COMPOSE.LLD.PORT.MATCHES}'
+          value: '.*'
+        - macro: '{$COMPOSE.LLD.PORT.NOT_MATCHES}'
+          value: CHANGE_IF_NEEDED
+        - macro: '{$COMPOSE.LLD.PROJECT.MATCHES}'
+          value: '.*'
+        - macro: '{$COMPOSE.LLD.PROJECT.NOT_MATCHES}'
+          value: CHANGE_IF_NEEDED
+        - macro: '{$COMPOSE.LLD.SERVICE.MATCHES}'
+          value: '.*'
+        - macro: '{$COMPOSE.LLD.SERVICE.NOT_MATCHES}'
+          value: CHANGE_IF_NEEDED
